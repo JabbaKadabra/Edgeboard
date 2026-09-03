@@ -189,6 +189,26 @@ async def fetch_usage(client: httpx.AsyncClient, token: str, url: str) -> dict:
 TRANSCRIPT_GLOBS = ("*/*.jsonl", "*/*/subagents/*.jsonl")
 
 
+# Usage events per transcript, keyed by (mtime_ns, size) so an unchanged file
+# is not re-read on every timeline poll.
+_events_cache: dict[Path, tuple[tuple[int, int], list[UsageEvent]]] = {}
+
+
+def _file_events(path: Path) -> list[UsageEvent] | None:
+    try:
+        st = path.stat()
+        key = (st.st_mtime_ns, st.st_size)
+        cached = _events_cache.get(path)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    events = usage_events(iter_entries(text))
+    _events_cache[path] = (key, events)
+    return events
+
+
 def load_all_events(claude_dir: Path, since: datetime) -> list[UsageEvent]:
     """Usage events from every transcript modified after ``since``.
 
@@ -200,13 +220,18 @@ def load_all_events(claude_dir: Path, since: datetime) -> list[UsageEvent]:
     if not projects.is_dir():
         return events
     paths = [p for pattern in TRANSCRIPT_GLOBS for p in projects.glob(pattern)]
+    keep: set[Path] = set()
     for path in paths:
         try:
             if path.stat().st_mtime < since.timestamp():
                 continue
-            text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        events.extend(e for e in usage_events(iter_entries(text)) if e.ts >= since)
+        keep.add(path)
+        file_events = _file_events(path)
+        if file_events:
+            events.extend(e for e in file_events if e.ts >= since)
+    for stale in [p for p in _events_cache if p not in keep]:
+        _events_cache.pop(stale, None)
     events.sort(key=lambda e: e.ts)
     return events

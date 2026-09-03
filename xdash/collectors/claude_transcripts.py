@@ -79,29 +79,41 @@ def iter_entries(text: str) -> Iterator[dict]:
 
 def read_tail(path: Path, max_bytes: int = 256_000) -> str:
     """Return the last ``max_bytes`` of a file, starting at a line boundary."""
+    return read_tail_bytes(path, max_bytes).decode("utf-8", errors="replace")
+
+
+def read_tail_bytes(path: Path, max_bytes: int = 256_000) -> bytes:
     size = path.stat().st_size
     with path.open("rb") as fh:
         if size > max_bytes:
             fh.seek(size - max_bytes)
             fh.readline()  # drop the partial first line
-        return fh.read().decode("utf-8", errors="replace")
+        return fh.read()
 
 
 def read_head(path: Path, max_bytes: int = 64_000) -> str:
     """Return the first ``max_bytes`` of a file, cut at a line boundary."""
+    return read_head_bytes(path, max_bytes).decode("utf-8", errors="replace")
+
+
+def read_head_bytes(path: Path, max_bytes: int = 64_000) -> bytes:
     with path.open("rb") as fh:
         data = fh.read(max_bytes)
     if len(data) == max_bytes:
         data = data[: data.rfind(b"\n") + 1]
-    return data.decode("utf-8", errors="replace")
+    return data
 
 
 def read_transcript(path: Path, full_limit: int = 4_000_000, head_bytes: int = 64_000, tail_bytes: int = 512_000) -> str:
     """Whole file when small; otherwise its head (for the title) plus its tail (for status)."""
+    return read_transcript_bytes(path, full_limit, head_bytes, tail_bytes).decode("utf-8", errors="replace")
+
+
+def read_transcript_bytes(path: Path, full_limit: int = 4_000_000, head_bytes: int = 64_000, tail_bytes: int = 512_000) -> bytes:
     size = path.stat().st_size
     if size <= full_limit:
-        return path.read_text(encoding="utf-8", errors="replace")
-    return read_head(path, head_bytes) + "\n" + read_tail(path, tail_bytes)
+        return path.read_bytes()
+    return read_head_bytes(path, head_bytes) + b"\n" + read_tail_bytes(path, tail_bytes)
 
 
 def short_model(name: str) -> str:
@@ -201,56 +213,69 @@ def usage_events(entries: Iterable[dict]) -> list[UsageEvent]:
     return [by_id[k] for k in order]
 
 
+class SessionParser:
+    """Incremental ``SessionFacts`` builder: feed entries as the transcript grows."""
+
+    def __init__(self) -> None:
+        self.facts = SessionFacts()
+        self._first_prompt = ""
+        self._summary = ""
+        self._seen_ids: set[str] = set()
+        self._index = 0
+
+    def feed(self, entries: Iterable[dict]) -> SessionFacts:
+        facts = self.facts
+        for entry in entries:
+            index = self._index
+            self._index += 1
+            try:
+                kind = entry.get("type")
+                if kind == "summary":
+                    self._summary = str(entry.get("summary") or "")
+                    continue
+                if kind not in ("user", "assistant"):
+                    continue
+                if entry.get("isSidechain") or (kind == "user" and entry.get("isMeta")):
+                    continue
+                if isinstance(entry.get("cwd"), str) and entry["cwd"]:
+                    facts.cwd = entry["cwd"]
+                if isinstance(entry.get("gitBranch"), str) and entry["gitBranch"]:
+                    facts.branch = entry["gitBranch"]
+                if isinstance(entry.get("sessionId"), str) and entry["sessionId"]:
+                    facts.session_id = entry["sessionId"]
+                ts = parse_ts(entry.get("timestamp"))
+                if ts is not None:
+                    facts.first_ts = facts.first_ts or ts
+                    facts.last_ts = ts
+                message = _message(entry)
+                if kind == "assistant" and not message:
+                    continue  # an assistant line without a message object carries nothing usable
+                if kind == "user":
+                    facts.last_kind = _user_kind(entry)
+                    facts.last_stop_reason = ""
+                    if facts.last_kind == "user_prompt" and not self._first_prompt:
+                        self._first_prompt = clean_prompt(_prompt_text(entry))
+                else:
+                    facts.last_kind = "assistant"
+                    facts.last_stop_reason = str(message.get("stop_reason") or "")
+                    if isinstance(message.get("model"), str) and message["model"]:
+                        facts.model = message["model"]
+                    usage = message.get("usage")
+                    if isinstance(usage, dict):
+                        facts.context_tokens = (
+                            _int(usage.get("input_tokens"))
+                            + _int(usage.get("cache_read_input_tokens"))
+                            + _int(usage.get("cache_creation_input_tokens"))
+                        )
+                    msg_id = str(message.get("id") or entry.get("uuid") or f"#{index}")
+                    if msg_id not in self._seen_ids:
+                        self._seen_ids.add(msg_id)
+                        facts.assistant_messages += 1
+            except (AttributeError, TypeError, ValueError):
+                continue  # skip mis-shaped entries instead of failing the whole session
+        facts.title = clean_prompt(self._summary) if self._summary else self._first_prompt
+        return facts
+
+
 def session_facts(entries: Iterable[dict]) -> SessionFacts:
-    facts = SessionFacts()
-    first_prompt = ""
-    summary = ""
-    seen_ids: set[str] = set()
-    for index, entry in enumerate(entries):
-        try:
-            kind = entry.get("type")
-            if kind == "summary":
-                summary = str(entry.get("summary") or "")
-                continue
-            if kind not in ("user", "assistant"):
-                continue
-            if entry.get("isSidechain") or (kind == "user" and entry.get("isMeta")):
-                continue
-            if isinstance(entry.get("cwd"), str) and entry["cwd"]:
-                facts.cwd = entry["cwd"]
-            if isinstance(entry.get("gitBranch"), str) and entry["gitBranch"]:
-                facts.branch = entry["gitBranch"]
-            if isinstance(entry.get("sessionId"), str) and entry["sessionId"]:
-                facts.session_id = entry["sessionId"]
-            ts = parse_ts(entry.get("timestamp"))
-            if ts is not None:
-                facts.first_ts = facts.first_ts or ts
-                facts.last_ts = ts
-            message = _message(entry)
-            if kind == "assistant" and not message:
-                continue  # an assistant line without a message object carries nothing usable
-            if kind == "user":
-                facts.last_kind = _user_kind(entry)
-                facts.last_stop_reason = ""
-                if facts.last_kind == "user_prompt" and not first_prompt:
-                    first_prompt = clean_prompt(_prompt_text(entry))
-            else:
-                facts.last_kind = "assistant"
-                facts.last_stop_reason = str(message.get("stop_reason") or "")
-                if isinstance(message.get("model"), str) and message["model"]:
-                    facts.model = message["model"]
-                usage = message.get("usage")
-                if isinstance(usage, dict):
-                    facts.context_tokens = (
-                        _int(usage.get("input_tokens"))
-                        + _int(usage.get("cache_read_input_tokens"))
-                        + _int(usage.get("cache_creation_input_tokens"))
-                    )
-                msg_id = str(message.get("id") or entry.get("uuid") or f"#{index}")
-                if msg_id not in seen_ids:
-                    seen_ids.add(msg_id)
-                    facts.assistant_messages += 1
-        except (AttributeError, TypeError, ValueError):
-            continue  # skip mis-shaped entries instead of failing the whole session
-    facts.title = clean_prompt(summary) if summary else first_prompt
-    return facts
+    return SessionParser().feed(entries)
