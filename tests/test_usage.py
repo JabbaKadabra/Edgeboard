@@ -118,3 +118,70 @@ def test_load_all_events_cache_respects_since(tmp_path):
     (proj / "a.jsonl").write_text("\n".join([assistant_line("m1", when=ts(30, NOW), output_tokens=1), assistant_line("m2", when=ts(1, NOW), output_tokens=2)]))
     assert [e.output for e in load_all_events(tmp_path, NOW - timedelta(hours=48))] == [1, 2]
     assert [e.output for e in load_all_events(tmp_path, NOW - timedelta(hours=24))] == [2]
+
+
+# ---------- limit projection ----------
+
+
+def samples(*points):
+    """(minutes_ago, utilization) pairs -> Sample list, oldest first."""
+    from edgeboard.collectors.claude_usage import Sample
+
+    return [Sample(NOW - timedelta(minutes=m), u) for m, u in sorted(points, reverse=True)]
+
+
+def test_project_window_rising_hits_full_before_reset():
+    from edgeboard.collectors.claude_usage import project_window
+
+    # 10 % per 30 min = 20 %/h, latest 40 % -> 100 % in 3 h
+    proj = project_window(samples((60, 20), (30, 30), (0, 40)), NOW)
+    assert proj.rate_per_hour == 20.0
+    assert proj.projected_full_at == (NOW + timedelta(hours=3)).isoformat()
+
+
+def test_project_window_two_samples_uses_delta():
+    from edgeboard.collectors.claude_usage import project_window
+
+    proj = project_window(samples((20, 10), (0, 15)), NOW)
+    assert proj.rate_per_hour == 15.0
+    assert proj.projected_full_at == (NOW + timedelta(hours=85 / 15)).isoformat()
+
+
+def test_project_window_flat_or_too_few_samples_is_none():
+    from edgeboard.collectors.claude_usage import project_window
+
+    assert project_window(samples((60, 20), (30, 20), (0, 20)), NOW).rate_per_hour is None
+    assert project_window(samples((0, 20)), NOW).rate_per_hour is None
+    assert project_window([], NOW).projected_full_at is None
+    # a tiny slope from noise (below 0.1 %/h) is treated as flat
+    assert project_window(samples((60, 20.0), (0, 20.05)), NOW).rate_per_hour is None
+
+
+def test_project_window_ignores_samples_before_a_reset():
+    from edgeboard.collectors.claude_usage import project_window
+
+    # the window reset between -30 and -20: utilization dropped from 90 to 5
+    proj = project_window(samples((60, 70), (30, 90), (20, 5), (10, 10), (0, 15)), NOW)
+    assert proj.rate_per_hour == 30.0
+    assert proj.projected_full_at == (NOW + timedelta(hours=85 / 30)).isoformat()
+
+
+def test_project_window_at_full_is_now():
+    from edgeboard.collectors.claude_usage import project_window
+
+    proj = project_window(samples((30, 90), (0, 100)), NOW)
+    assert proj.rate_per_hour == 20.0
+    assert proj.projected_full_at == NOW.isoformat()
+
+
+def test_record_sample_trims_and_drops_old_windows():
+    from edgeboard.collectors.claude_usage import Sample, record_sample
+
+    store: dict[str, list[Sample]] = {}
+    for i in range(40):
+        record_sample(store, "five_hour", Sample(NOW + timedelta(minutes=i), float(i)), limit=30)
+    assert len(store["five_hour"]) == 30
+    assert store["five_hour"][0].utilization == 10.0 and store["five_hour"][-1].utilization == 39.0
+    # a None utilization (local fallback) records nothing
+    record_sample(store, "seven_day", Sample(NOW, None), limit=30)
+    assert "seven_day" not in store

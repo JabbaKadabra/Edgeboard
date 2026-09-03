@@ -38,9 +38,33 @@ class UsageWindow:
     resets_at: str | None
     seconds_to_reset: int | None
     tokens: int | None = None
+    # Pace over the recent samples (see ``project_window``): None while flat or unknown.
+    rate_per_hour: float | None = None
+    projected_full_at: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass
+class Sample:
+    """One ``(when, utilization)`` reading of a usage window."""
+
+    ts: datetime
+    utilization: float | None
+
+
+@dataclass
+class Projection:
+    rate_per_hour: float | None = None
+    projected_full_at: str | None = None
+
+
+# Samples kept per window for the projection: at the 60 s poll interval that is
+# half an hour of history, enough to smooth a burst without lagging a real change.
+PROJECTION_SAMPLES = 30
+# Below this pace the line is noise (a 5-hour window would take days to fill).
+MIN_RATE_PER_HOUR = 0.1
 
 
 @dataclass
@@ -157,6 +181,62 @@ def timeline(events: Iterable[UsageEvent], now: datetime, hours: int = 24) -> li
         if 0 <= idx < hours:
             sums[idx] += e.burn
     return [TimelineBucket(hour_start=s.isoformat(), tokens=t) for s, t in zip(starts, sums)]
+
+
+def _since_last_reset(samples: list[Sample]) -> list[Sample]:
+    """The tail of ``samples`` after the last drop in utilization (a window reset)."""
+    start = 0
+    for i in range(1, len(samples)):
+        if samples[i].utilization < samples[i - 1].utilization:
+            start = i
+    return samples[start:]
+
+
+def project_window(samples: Iterable[Sample], now: datetime) -> Projection:
+    """When the window hits 100 % at the current pace.
+
+    Fits a least-squares slope through the samples taken since the last reset
+    (three or more), or takes the delta between the oldest and newest when
+    there are only two. A slope below ``MIN_RATE_PER_HOUR`` counts as flat and
+    yields an empty projection, as does anything with fewer than two samples.
+    """
+    usable = _since_last_reset(sorted((s for s in samples if s.utilization is not None), key=lambda s: s.ts))
+    if len(usable) < 2:
+        return Projection()
+    t0 = usable[0].ts
+    xs = [(s.ts - t0).total_seconds() / 3600 for s in usable]
+    ys = [s.utilization for s in usable]
+    span = xs[-1] - xs[0]
+    if span <= 0:
+        return Projection()
+    if len(usable) < 3:
+        slope = (ys[-1] - ys[0]) / span
+    else:
+        mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+        var = sum((x - mx) ** 2 for x in xs)
+        slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / var
+    rate = round(slope, 3)
+    if rate < MIN_RATE_PER_HOUR:
+        return Projection()
+    hours_left = max(0.0, (100.0 - ys[-1]) / rate)
+    return Projection(rate_per_hour=rate, projected_full_at=(now + timedelta(hours=hours_left)).isoformat())
+
+
+def record_sample(store: dict[str, list[Sample]], key: str, sample: Sample, limit: int = PROJECTION_SAMPLES) -> None:
+    """Append ``sample`` to the per-window history, keeping the newest ``limit`` readings."""
+    if sample.utilization is None:
+        return
+    history = store.setdefault(key, [])
+    history.append(sample)
+    del history[:-limit]
+
+
+def project_windows(windows: Iterable[UsageWindow], store: dict[str, list[Sample]], now: datetime) -> None:
+    """Record ``now``'s reading of each window and fill in its projection in place."""
+    for w in windows:
+        record_sample(store, w.key, Sample(now, w.utilization))
+        proj = project_window(store.get(w.key, []), now)
+        w.rate_per_hour, w.projected_full_at = proj.rate_per_hour, proj.projected_full_at
 
 
 def load_token(claude_dir: Path) -> str | None:
