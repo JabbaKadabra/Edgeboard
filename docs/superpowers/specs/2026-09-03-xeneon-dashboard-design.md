@@ -182,6 +182,15 @@ transcripts — tokens in the rolling 5-hour and 7-day windows, reset time =
 first event in window + window length. No percentage is shown (the plan's
 limits are not known locally); the UI labels this "estimated".
 
+Pace projection: the server keeps the last 30 `(timestamp, utilization)`
+samples per window (about half an hour at the 60 s poll) and drops those
+from before the last reset (a drop in utilization). `project_window()` fits
+a least-squares slope through three or more samples (the oldest/newest
+delta with two) and yields `rate_per_hour` and `projected_full_at`, both
+`null` below 0.1 %/h. The Limits panel shows "at this pace 100% at HH:MM"
+in amber when that is before `resets_at`, "safe until reset" otherwise,
+and no line at all while flat.
+
 Always from local transcripts:
 
 - Today totals: output, input, cache read, cache write, assistant messages.
@@ -269,6 +278,17 @@ mascot flashes and becomes a coffee cup for a 5 min purple "break"; at zero
 (or a tap) it flashes back to Claude and the countdown hides. Nothing is
 persisted; the server knows nothing about it.
 
+Attention alerts: the page compares each session's status with the previous
+snapshot. `working → idle` (Claude finished) and anything `→ attention`
+(permission prompt, question) make the card flash a few times and keep a
+double border until its status changes again, and the mascot raises its arms
+(pink) while any card is in that state. The server runs the same detection
+(`attention_transitions`) for an optional desktop notification through
+`notify-send` (`EDGEBOARD_ALERT_NOTIFY`); an optional chime on the panel
+(`EDGEBOARD_ALERT_SOUND`, exposed as `settings.alert_sound` in the snapshot)
+reuses the pomodoro's synthesized WebAudio notes. Both are off by default; a
+session seen for the first time never alerts.
+
 ## Error handling
 
 - Every collector catches its own exceptions, logs once per distinct
@@ -287,6 +307,10 @@ persisted; the server knows nothing about it.
   sensor selection, model-name shortening.
 - Server smoke test with `TestClient`: `/api/state` returns the schema,
   `/api/spotify/next` calls the injected runner.
+- Browser layout test (`tests/test_page.py`, marker `browser`, skipped
+  without Playwright): the demo page in headless Chromium at 2560×720 must
+  not scroll or overflow, show four columns and four cards, the Spotify
+  title and no console errors; a screenshot goes to `tests/artifacts/`.
 - Manual: run `python -m edgeboard` on the target machine and open the page.
 
 ## Deployment (Arch)
@@ -296,6 +320,11 @@ sudo pacman -S --needed python uv playerctl chromium
 uv venv && uv pip install -e .   # creates .venv from pyproject
 systemctl --user enable --now edgeboard.service edgeboard-kiosk.service
 ```
+
+Both units use `Restart=always` (the server with `RestartSec=3` and
+`StartLimitIntervalSec=0`) so a clean exit or a crash loop never leaves the
+kiosk on "disconnected"; `systemctl --user stop edgeboard` is the way to stop
+it on purpose.
 
 `scripts/kiosk.sh` launches Chromium in kiosk mode with
 `--window-position` set from `EDGEBOARD_DISPLAY_OFFSET` (the X offset of the

@@ -69,6 +69,10 @@ systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XDG_CURRENT_DESKTOP
 
 If the browser never appears, check `journalctl --user -u edgeboard-kiosk`.
 
+Both units restart on any exit (`Restart=always`), so a stray `pkill` or a
+crash only costs a few seconds of "disconnected". To stop the dashboard on
+purpose use `systemctl --user stop edgeboard` (the kiosk follows it).
+
 ## Data sources
 
 | Panel    | Source                                                                                                   |
@@ -105,11 +109,31 @@ from `~/.claude/.credentials.json`.
 | `EDGEBOARD_SESSIONS_SHOWN`      | `4` cards                                |
 | `EDGEBOARD_DONE_SESSIONS_LIMIT` | `12`                                     |
 | `EDGEBOARD_DEMO`                | `0`                                      |
+| `EDGEBOARD_ALERT_SOUND`         | `0` (chime on the panel when a session needs you) |
+| `EDGEBOARD_ALERT_NOTIFY`        | `0` (`notify-send` on the desktop as well)        |
 | `EDGEBOARD_ENV_FILE`            | `.env` (relative to the working directory) |
 
 The server has no authentication and exposes session titles, project paths
 and usage data. Keep `EDGEBOARD_HOST` on `127.0.0.1`; if you must reach it from
 another machine, put it behind a reverse proxy that adds auth.
+
+## Attention alerts
+
+The point of the panel is to know when Claude needs you. When a session card
+goes from `working` to `idle` (Claude finished its turn) or to `attention`
+(permission prompt or question, see the hooks below) it flashes a few times
+and keeps a double border until its status changes again, and the mascot
+raises its arms while any card is in that state. Two optional extras:
+
+- `EDGEBOARD_ALERT_SOUND=1` plays a short chime on the panel (the kiosk
+  browser is started with autoplay allowed, so it sounds without a tap).
+- `EDGEBOARD_ALERT_NOTIFY=1` sends a desktop notification through
+  `notify-send`, so the main monitor sees it too.
+
+The Limits panel also projects the current pace: `at this pace 100% at 15:40`
+in amber when the window would fill before it resets, `safe until reset`
+otherwise, nothing while usage is flat. The pace is a least-squares fit over
+the last 30 usage polls (about half an hour) since the window last reset.
 
 ## Session state from hooks
 
@@ -181,5 +205,16 @@ uv pip install -e ".[dev]"
 .venv/bin/pytest
 ```
 
-`tests/` covers the transcript parser, session classification, usage windows
-and timeline, playerctl parsing, sensor selection, and the HTTP routes.
+`tests/` covers the transcript parser, session classification, usage windows,
+projection and timeline, playerctl parsing, sensor selection, and the HTTP
+routes.
+
+`tests/test_page.py` renders the demo page in headless Chromium at the
+panel's 2560×720 and checks that nothing overflows, all four columns are on
+screen, the cards and Spotify title render and the console is clean. It is
+skipped unless Playwright is installed:
+
+```sh
+.venv/bin/pip install -e ".[browser]" && .venv/bin/playwright install chromium
+.venv/bin/pytest -m browser          # screenshot lands in tests/artifacts/
+```
