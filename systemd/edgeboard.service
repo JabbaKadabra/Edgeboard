@@ -1,6 +1,8 @@
 [Unit]
 Description=edgeboard dashboard server
 After=network.target
+# Never give up restarting: a crash loop during a bad deploy must not park the unit.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -10,7 +12,9 @@ ExecStart=%h/Dashboard/.venv/bin/python -m edgeboard
 # below override it.
 EnvironmentFile=-%h/Dashboard/.env
 # Environment=EDGEBOARD_PORT=8765
-Restart=on-failure
+# Restart after a clean exit too (a stray pkill, say) so the kiosk never sits on
+# "disconnected"; stop it on purpose with: systemctl --user stop edgeboard
+Restart=always
 RestartSec=3
 
 [Install]
