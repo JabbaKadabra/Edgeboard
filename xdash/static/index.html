@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>xdash</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%23ff9f1c%27/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="disconnected" class="badge-disconnected" hidden>disconnected</div>
+<main class="dash">
+
+  <!-- column 1: brand, mascot, clock -->
+  <section class="col col-brand">
+    <div class="brand">
+      <svg class="brand-icon" viewBox="0 0 11 8" aria-hidden="true"></svg>
+      <span class="brand-name">xdash</span>
+    </div>
+    <div class="mascot-wrap">
+      <svg id="mascot" class="mascot" viewBox="0 0 11 8" aria-hidden="true"></svg>
+    </div>
+    <div class="clock">
+      <span id="clock-hm">--:--</span><span id="clock-s" class="clock-s">--</span>
+    </div>
+    <div id="clock-date" class="clock-date">---, --- --</div>
+    <div class="status-chips">
+      <span class="chip" id="chip-claude"><i class="dot"></i>claude</span>
+      <span class="chip" id="chip-spotify"><i class="dot"></i>spotify</span>
+      <span class="chip" id="chip-sys"><i class="dot"></i>sensors</span>
+    </div>
+  </section>
+
+  <!-- column 2: limits, today, timeline -->
+  <section class="col col-usage">
+    <div class="panel">
+      <div class="panel-head"><span>Limits</span><span id="usage-source" class="muted"></span></div>
+      <div id="limits" class="limits"></div>
+    </div>
+    <div class="panel panel-today">
+      <div class="panel-head"><span>Today</span><span id="today-msgs" class="muted"></span></div>
+      <div class="today-grid">
+        <div class="stat"><b id="t-out">–</b><span>out</span></div>
+        <div class="stat"><b id="t-in">–</b><span>in</span></div>
+        <div class="stat"><b id="t-cache">–</b><span>cache rd</span></div>
+        <div class="stat"><b id="t-write">–</b><span>cache wr</span></div>
+      </div>
+      <div class="timeline-head"><span>24 h burn</span><span id="timeline-peak" class="muted"></span></div>
+      <div id="timeline" class="timeline"></div>
+      <div id="timeline-labels" class="timeline-labels"></div>
+    </div>
+    <div id="sys-line" class="sys-line"></div>
+  </section>
+
+  <!-- column 3: sessions -->
+  <section class="col col-sessions">
+    <div class="panel panel-sessions">
+      <div class="panel-head">
+        <span>Sessions <span class="muted">today</span></span>
+        <span id="sessions-summary" class="muted"></span>
+      </div>
+      <div id="sessions" class="sessions"></div>
+      <div id="sessions-empty" class="sessions-empty" hidden>no Claude Code sessions today</div>
+    </div>
+  </section>
+
+  <!-- column 4: spotify + system -->
+  <section class="col col-side">
+    <div class="panel panel-spotify" id="spotify">
+      <div class="np">
+        <div class="art-wrap">
+          <img id="art" class="art" alt="" hidden>
+          <div id="art-placeholder" class="art-placeholder">♪</div>
+        </div>
+        <div class="np-text">
+          <div id="np-title" class="np-title">Spotify not running</div>
+          <div id="np-artist" class="np-artist"></div>
+          <div id="np-album" class="np-album"></div>
+        </div>
+      </div>
+      <div class="progress"><div id="np-bar" class="progress-fill"></div></div>
+      <div class="np-times"><span id="np-pos">0:00</span><span id="np-len">0:00</span></div>
+      <div class="controls">
+        <button class="ctl" data-action="previous" aria-label="previous">⏮</button>
+        <button class="ctl ctl-main" data-action="play_pause" aria-label="play or pause" id="btn-play">▶</button>
+        <button class="ctl" data-action="next" aria-label="next">⏭</button>
+      </div>
+    </div>
+
+    <div class="panel panel-system">
+      <div class="panel-head"><span>System</span><span id="sys-uptime" class="muted"></span></div>
+      <div class="meter"><span class="meter-label">CPU</span><div class="bar"><div id="m-cpu" class="bar-fill"></div></div><span id="v-cpu" class="meter-val">–</span><span id="v-cpu-temp" class="meter-extra"></span></div>
+      <div class="meter"><span class="meter-label">GPU</span><div class="bar"><div id="m-gpu" class="bar-fill"></div></div><span id="v-gpu" class="meter-val">–</span><span id="v-gpu-temp" class="meter-extra"></span></div>
+      <div class="meter"><span class="meter-label">MEM</span><div class="bar"><div id="m-mem" class="bar-fill"></div></div><span id="v-mem" class="meter-val">–</span><span id="v-mem-extra" class="meter-extra"></span></div>
+      <div class="meter"><span class="meter-label">DISK</span><div class="bar"><div id="m-disk" class="bar-fill"></div></div><span id="v-disk" class="meter-val">–</span><span id="v-disk-extra" class="meter-extra"></span></div>
+      <div class="net"><span class="meter-label">NET</span><span id="v-net" class="net-val">–</span></div>
+      <svg id="spark-cpu" class="spark" viewBox="0 0 120 40" preserveAspectRatio="none"></svg>
+      <div class="spark-legend"><span><i class="sw sw-cpu"></i>cpu</span><span><i class="sw sw-gpu"></i>gpu</span><span id="sys-load" class="muted"></span></div>
+    </div>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

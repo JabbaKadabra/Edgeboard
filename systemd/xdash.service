@@ -1,0 +1,15 @@
+[Unit]
+Description=xdash dashboard server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Dashboard
+ExecStart=%h/Dashboard/.venv/bin/python -m xdash
+Environment=XDASH_PORT=8765
+# Environment=XDASH_SPOTIFY_PLAYER=spotify
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
