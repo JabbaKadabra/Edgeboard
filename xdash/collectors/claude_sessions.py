@@ -9,12 +9,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from xdash.collectors.claude_transcripts import SessionFacts, iter_entries, read_transcript, session_facts, short_model
+from xdash.collectors.claude_transcripts import SessionFacts, SessionParser, iter_entries, read_transcript_bytes, short_model
 from xdash.config import Settings
 
 WORKING = "working"
 IDLE = "idle"
 DONE = "done"
+# A transcript without a pid file (``claude -p``, remote sessions) counts as
+# running while it was written this recently and its tail says Claude is busy.
+HEADLESS_ACTIVE_SECS = 60.0
 
 
 @dataclass
@@ -51,8 +54,13 @@ def classify(facts: SessionFacts, alive: bool) -> tuple[str, str]:
     return IDLE, "session started"
 
 
-def os_pid_alive(pid: int) -> bool:
-    return Path("/proc", str(pid)).exists()
+def os_pid_alive(pid: int, proc: Path = Path("/proc")) -> bool:
+    """True when ``pid`` exists and runs Claude Code (pids get reused after exit)."""
+    try:
+        cmdline = (proc / str(pid) / "cmdline").read_bytes()
+    except OSError:
+        return False
+    return b"claude" in cmdline.lower()
 
 
 def find_transcript(claude_dir: Path, session_id: str) -> Path | None:
@@ -86,25 +94,53 @@ def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
 
 
-# Parsed facts per transcript, keyed by (mtime_ns, size). Transcripts are
-# append-only, so an unchanged file yields the same facts; this keeps the 2 s
-# poll from re-parsing megabytes of idle sessions.
-_facts_cache: dict[Path, tuple[tuple[int, int], SessionFacts]] = {}
+# Parser state per transcript. Transcripts are append-only, so when a file
+# only grew since the last poll just the new bytes are parsed; an unchanged
+# file yields the cached facts. Keyed by (mtime_ns, size); ``offset`` is how
+# far the parser has consumed (always at a line boundary).
+@dataclass
+class _Cached:
+    key: tuple[int, int]
+    parser: SessionParser
+    offset: int
+
+
+_facts_cache: dict[Path, _Cached] = {}
+
+
+def _consume(parser: SessionParser, path: Path, start: int, end: int) -> int:
+    """Feed complete lines in ``[start, end)`` to ``parser``; return the new offset."""
+    with path.open("rb") as fh:
+        fh.seek(start)
+        data = fh.read(end - start)
+    cut = data.rfind(b"\n") + 1
+    if cut == 0:
+        return start  # no complete line yet; the writer is mid-line
+    parser.feed(iter_entries(data[:cut].decode("utf-8", errors="replace")))
+    return start + cut
 
 
 def load_facts(path: Path) -> tuple[SessionFacts, datetime]:
     st = path.stat()
     key = (st.st_mtime_ns, st.st_size)
     cached = _facts_cache.get(path)
-    if cached is not None and cached[0] == key:
-        facts = cached[1]
+    if cached is not None and cached.key == key:
+        facts = cached.parser.facts
+    elif cached is not None and st.st_size >= cached.offset:
+        cached.offset = _consume(cached.parser, path, cached.offset, st.st_size)
+        cached.key = key
+        facts = cached.parser.facts
     else:
-        facts = session_facts(iter_entries(read_transcript(path)))
-        _facts_cache[path] = (key, facts)
+        parser = SessionParser()
+        data = read_transcript_bytes(path)
+        facts = parser.feed(iter_entries(data.decode("utf-8", errors="replace")))
+        # An unterminated last line was fed for freshness but is re-read once complete.
+        unterminated = len(data) - (data.rfind(b"\n") + 1)
+        _facts_cache[path] = _Cached(key, parser, st.st_size - unterminated)
     return facts, datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
 
 
-def _build(session_id: str, path: Path | None, alive: bool, started_ms: int | None, fallback_cwd: str) -> Session:
+def _build(session_id: str, path: Path | None, alive: bool, started_ms: int | None, fallback_cwd: str, headless: bool = False) -> Session:
     facts = SessionFacts()
     mtime: datetime | None = None
     if path is not None:
@@ -113,6 +149,8 @@ def _build(session_id: str, path: Path | None, alive: bool, started_ms: int | No
         except OSError:
             pass
     status, detail = classify(facts, alive)
+    if headless and status != WORKING:
+        status, detail = DONE, "finished"  # no process to wait for input
     cwd = facts.cwd or fallback_cwd
     started = datetime.fromtimestamp(started_ms / 1000, tz=timezone.utc) if started_ms else facts.first_ts
     return Session(
@@ -165,17 +203,19 @@ def collect_sessions(
             if mtime >= local_midnight.timestamp():
                 finished.append((mtime, path))
     finished.sort(reverse=True)
-    for _, path in finished[: settings.done_sessions_limit]:
+    hidden_done = max(0, len(finished) - settings.done_sessions_limit)
+    for mtime, path in finished[: settings.done_sessions_limit]:
         seen.add(path.stem)
-        sessions.append(_build(path.stem, path, False, None, ""))
+        recent = now.timestamp() - mtime < HEADLESS_ACTIVE_SECS
+        sessions.append(_build(path.stem, path, recent, None, "", headless=True))
     for stale in [p for p in _facts_cache if p.stem not in seen]:
         _facts_cache.pop(stale, None)
 
     order = {WORKING: 0, IDLE: 1, DONE: 2}
     sessions.sort(key=lambda s: (order.get(s.status, 3), -(_epoch(s.last_activity))))
     summary = {
-        "today": len(sessions),
-        "done": sum(1 for s in sessions if s.status == DONE),
+        "today": len(sessions) + hidden_done,
+        "done": sum(1 for s in sessions if s.status == DONE) + hidden_done,
         "working": sum(1 for s in sessions if s.status == WORKING),
         "idle": sum(1 for s in sessions if s.status == IDLE),
     }

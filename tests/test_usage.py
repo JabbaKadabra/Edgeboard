@@ -90,3 +90,29 @@ def test_load_all_events_includes_subagents(tmp_path):
     (sub / "agent-1.jsonl").write_text(assistant_line("agent", when=ts(1, NOW), output_tokens=7))
     events = load_all_events(tmp_path, NOW - timedelta(hours=24))
     assert sorted(e.output for e in events) == [5, 7]
+
+
+def test_load_all_events_caches_unchanged_files(tmp_path):
+    import os
+
+    proj = tmp_path / "projects" / "-x"
+    proj.mkdir(parents=True)
+    path = proj / "a.jsonl"
+    path.write_text(assistant_line("m1", when=ts(1, NOW), output_tokens=100))
+    since = NOW - timedelta(hours=24)
+    assert [e.output for e in load_all_events(tmp_path, since)] == [100]
+    st = path.stat()
+    path.write_text(assistant_line("m1", when=ts(1, NOW), output_tokens=900))  # same size
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert [e.output for e in load_all_events(tmp_path, since)] == [100]  # unchanged mtime+size: cached
+    with path.open("a") as fh:
+        fh.write("\n" + assistant_line("m2", when=ts(0.5, NOW), output_tokens=7))
+    assert [e.output for e in load_all_events(tmp_path, since)] == [900, 7]
+
+
+def test_load_all_events_cache_respects_since(tmp_path):
+    proj = tmp_path / "projects" / "-x"
+    proj.mkdir(parents=True)
+    (proj / "a.jsonl").write_text("\n".join([assistant_line("m1", when=ts(30, NOW), output_tokens=1), assistant_line("m2", when=ts(1, NOW), output_tokens=2)]))
+    assert [e.output for e in load_all_events(tmp_path, NOW - timedelta(hours=48))] == [1, 2]
+    assert [e.output for e in load_all_events(tmp_path, NOW - timedelta(hours=24))] == [2]
