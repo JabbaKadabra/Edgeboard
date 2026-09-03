@@ -62,3 +62,25 @@ def test_spotify_seek_volume_and_tappable_scrollable_queue():
     assert re.search(r"^\.queue\s*\{[^}]*overflow-y:\s*auto", css, re.M)
     assert "getBoundingClientRect().bottom" not in js.split("function renderQueue")[1].split("function tickProgress")[0]
     assert 'postSpotify("skip"' in js and "data-index" in js
+
+
+def test_mascot_is_pomodoro_tap_target_not_bouncing():
+    html = (STATIC / "index.html").read_text()
+    js = (STATIC / "app.js").read_text()
+    css = (STATIC / "style.css").read_text()
+    # the mascot no longer bobs while sessions work
+    assert "bounce" not in css
+    sessions_js = js.split("function renderSessions")[1].split("function escapeHtml")[0]
+    assert "mascot" not in sessions_js
+    # tapping the mascot area runs a 25 min focus / 5 min break pomodoro shown above the clock
+    assert 'id="mascot-wrap"' in html and 'id="pomo"' in html
+    assert html.index('id="pomo"') < html.index('class="clock"')
+    pomo_js = js.split("// ---------- pomodoro ----------")[1].split("// ----------")[0]
+    assert "25 * 60" in pomo_js and "5 * 60" in pomo_js
+    assert '$("mascot-wrap").addEventListener("click"' in pomo_js
+    assert "COFFEE" in js  # the break phase draws a coffee cup instead of Claude
+    # phase ends flash the mascot; the countdown is smaller than the clock
+    assert re.search(r"^\.mascot\.flash\s*\{[^}]*animation:\s*flash", css, re.M)
+    pomo_px = int(re.search(r"^\.pomo\s*\{[^}]*font-size:\s*(\d+)px", css, re.M).group(1))
+    clock_px = int(re.search(r"^\.clock\s*\{[^}]*font-size:\s*(\d+)px", css, re.M).group(1))
+    assert pomo_px < clock_px

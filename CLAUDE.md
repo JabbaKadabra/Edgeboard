@@ -47,7 +47,7 @@ Data flow: collectors poll sources on their own asyncio loops → write dicts in
 
 **System** (`system.py`): psutil + hwmon; CPU temp chosen by the `CPU_SENSOR_PREFERENCE` order; GPU via `nvidia-smi` or AMD sysfs, else `null`. 120-sample ring buffers feed the sparklines.
 
-**Frontend**: fixed four-column CSS grid sized for 2560×720 but fluid enough to preview in a normal window: clock | limits + today + system stats with a cpu/gpu trace | a 2×2 grid of session cards | Spotify with the play queue. Session cards keep their DOM position between snapshots (update in place, don't re-create). JetBrains Mono is vendored as woff2 in `edgeboard/static/fonts/` (no network fonts; the kiosk may be offline). Theme: tmux-style panes on a near-black Dracula palette with amber for Claude. There is no status bar; collector errors show in red under the clock.
+**Frontend**: fixed four-column CSS grid sized for 2560×720 but fluid enough to preview in a normal window: clock | limits + today + system stats with a cpu/gpu trace | a 2×2 grid of session cards | Spotify with the play queue. Session cards keep their DOM position between snapshots (update in place, don't re-create). JetBrains Mono is vendored as woff2 in `edgeboard/static/fonts/` (no network fonts; the kiosk may be offline). Theme: tmux-style panes on a near-black Dracula palette with amber for Claude. There is no status bar; collector errors show in red under the clock. The mascot is a tap target for a client-only pomodoro (25 min focus, 5 min coffee-cup break, countdown above the clock); it is not part of the snapshot.
 
 ## Deployment
 

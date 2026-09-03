@@ -14,6 +14,16 @@
     "...XX.XX...",
   ];
   const EYES = [[3, 3], [3, 7]];
+  const COFFEE = [
+    "....s.s....",
+    "...s.s.....",
+    "...........",
+    ".XXXXXXX...",
+    ".XXXXXXXXX.",
+    ".XXXXXXXX.X",
+    "..XXXXXXXX.",
+    "...XXXXX...",
+  ];
 
   // ---------- helpers ----------
   function fmtTokens(n) {
@@ -62,24 +72,24 @@
   function heat(pct) { return pct >= 90 ? "hot" : pct >= 70 ? "warm" : ""; }
 
   // ---------- mascot ----------
-  function drawMascot(svg) {
+  function pixel(svg, x, y, cls) {
+    const r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    r.setAttribute("x", x); r.setAttribute("y", y); r.setAttribute("width", 1); r.setAttribute("height", 1);
+    if (cls) r.setAttribute("class", cls);
+    svg.appendChild(r);
+  }
+  // grid: "X" = body pixel, "s" = steam pixel; eyes are drawn on top in the background colour
+  function drawMascot(svg, grid, eyes) {
     svg.innerHTML = "";
-    MASCOT.forEach((row, y) => {
+    grid.forEach((row, y) => {
       [...row].forEach((ch, x) => {
-        if (ch !== "X") return;
-        const r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-        r.setAttribute("x", x); r.setAttribute("y", y); r.setAttribute("width", 1); r.setAttribute("height", 1);
-        svg.appendChild(r);
+        if (ch === "X") pixel(svg, x, y);
+        else if (ch === "s") pixel(svg, x, y, "steam");
       });
     });
-    EYES.forEach(([y, x]) => {
-      const r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-      r.setAttribute("x", x); r.setAttribute("y", y); r.setAttribute("width", 1); r.setAttribute("height", 1);
-      r.setAttribute("class", "eye");
-      svg.appendChild(r);
-    });
+    (eyes || []).forEach(([y, x]) => pixel(svg, x, y, "eye"));
   }
-  drawMascot($("mascot"));
+  drawMascot($("mascot"), MASCOT, EYES);
 
   // ---------- clock ----------
   function tickClock() {
@@ -89,8 +99,45 @@
     text("clock-s", String(d.getSeconds()).padStart(2, "0"));
     text("clock-date", d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) + (/[AP]M/i.test(d.toLocaleTimeString()) ? (d.getHours() < 12 ? " AM" : " PM") : ""));
   }
+
+  // ---------- pomodoro ----------
+  // Tapping the mascot runs one loop: off -> focus (25 min) -> break (5 min, coffee cup) -> off.
+  // A tap advances early; reaching zero advances automatically. End times are wall-clock so a stalled tab stays right.
+  const POMO_FOCUS_MS = 25 * 60 * 1000;
+  const POMO_BREAK_MS = 5 * 60 * 1000;
+  const pomo = { phase: "off", endsAt: 0 };
+  function flashMascot() {
+    const svg = $("mascot");
+    svg.classList.remove("flash");
+    void svg.getBoundingClientRect();  // restart the animation if it is still running
+    svg.classList.add("flash");
+  }
+  function advancePomo() {
+    const from = pomo.phase;
+    if (from === "off") { pomo.phase = "focus"; pomo.endsAt = Date.now() + POMO_FOCUS_MS; }
+    else if (from === "focus") { pomo.phase = "break"; pomo.endsAt = Date.now() + POMO_BREAK_MS; }
+    else { pomo.phase = "off"; pomo.endsAt = 0; }
+    if (pomo.phase === "break") drawMascot($("mascot"), COFFEE);
+    else if (from === "break") drawMascot($("mascot"), MASCOT, EYES);
+    if (from !== "off") flashMascot();
+    tickPomo();
+  }
+  function tickPomo() {
+    const el = $("pomo");
+    if (pomo.phase === "off") { el.hidden = true; return; }
+    const remaining = pomo.endsAt - Date.now();
+    if (remaining <= 0) { advancePomo(); return; }
+    text("pomo-label", pomo.phase);
+    text("pomo-time", fmtClockSecs(Math.ceil(remaining / 1000)));
+    el.classList.toggle("break", pomo.phase === "break");
+    el.hidden = false;
+  }
+  $("mascot-wrap").addEventListener("click", advancePomo);
+  $("mascot").addEventListener("animationend", (ev) => { if (ev.animationName === "flash") ev.target.classList.remove("flash"); });
+
   tickClock();
-  setInterval(tickClock, 1000);
+  tickPomo();
+  setInterval(() => { tickClock(); tickPomo(); }, 1000);
 
   // ---------- usage ----------
   function renderUsage(usage, errors) {
@@ -205,7 +252,6 @@
     for (const [id, el] of cardNodes) {
       if (!seen.has(id)) { el.remove(); cardNodes.delete(id); }
     }
-    $("mascot").classList.toggle("working", (summary.working || 0) > 0);
   }
   function escapeHtml(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));

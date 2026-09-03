@@ -230,8 +230,12 @@ the stack falls back to any installed monospace. Collector errors are shown
 as a red line under the clock; there is no status bar.
 
 The page reconnects the SSE stream automatically and shows a "disconnected"
-badge if no event arrives for 5 s. Mascot blinks periodically and bounces
-while any session is working.
+badge if no event arrives for 5 s. The mascot blinks periodically and is a
+tap target for a client-side pomodoro: one tap starts a 25 min "focus"
+countdown shown above the clock in amber; at zero (or on another tap) the
+mascot flashes and becomes a coffee cup for a 5 min purple "break"; at zero
+(or a tap) it flashes back to Claude and the countdown hides. Nothing is
+persisted; the server knows nothing about it.
 
 ## Error handling
 
