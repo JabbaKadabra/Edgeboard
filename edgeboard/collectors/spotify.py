@@ -18,12 +18,13 @@ FORMAT = SEP.join(
         "{{mpris:length}}",
         "{{position}}",
         "{{shuffle}}",
+        "{{volume}}",
     ]
 )
 ACTIONS = {"play_pause": "play-pause", "next": "next", "previous": "previous"}
 
 Runner = Callable[[list[str]], tuple[int, str]]
-log = logging.getLogger("xdash.spotify")
+log = logging.getLogger("edgeboard.spotify")
 
 
 @dataclass
@@ -38,6 +39,7 @@ class SpotifyState:
     length_s: float = 0.0
     position_s: float = 0.0
     shuffle: bool = False
+    volume: float = 1.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -62,11 +64,20 @@ def _micros(value: str) -> float:
         return 0.0
 
 
+def _fraction(value: str) -> float:
+    try:
+        return min(max(float(value.strip()), 0.0), 1.0)
+    except ValueError:
+        return 1.0
+
+
 def parse_metadata(output: str) -> SpotifyState:
     parts = output.rstrip("\n").split(SEP)
     if len(parts) < 8:
         return SpotifyState(running=False)
     status, title, artist, album, art, length, position, shuffle = parts[:8]
+    # older playerctl output had eight fields; volume is a later addition
+    volume = _fraction(parts[8]) if len(parts) > 8 else 1.0
     return SpotifyState(
         running=True,
         status=status.strip() or "Stopped",
@@ -77,6 +88,7 @@ def parse_metadata(output: str) -> SpotifyState:
         length_s=_micros(length.strip()),
         position_s=_micros(position.strip()),
         shuffle=shuffle.strip().lower() == "on",
+        volume=volume,
     )
 
 
@@ -94,3 +106,22 @@ def control(runner: Runner, player: str, action: str) -> bool:
         raise ValueError(f"unknown spotify action: {action}")
     code, _ = runner(["playerctl", "-p", player, ACTIONS[action]])
     return code == 0
+
+
+def seek(runner: Runner, player: str, seconds: float) -> bool:
+    code, _ = runner(["playerctl", "-p", player, "position", f"{seconds:g}"])
+    return code == 0
+
+
+def set_volume(runner: Runner, player: str, volume: float) -> bool:
+    code, _ = runner(["playerctl", "-p", player, "volume", f"{volume:g}"])
+    return code == 0
+
+
+def skip(runner: Runner, player: str, count: int) -> bool:
+    """Advance ``count`` tracks with repeated ``next``; MPRIS has no jump-to-queue-entry."""
+    for _ in range(count):
+        code, _ = runner(["playerctl", "-p", player, "next"])
+        if code != 0:
+            return False
+    return True

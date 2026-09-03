@@ -1,4 +1,4 @@
-from xdash.server import main
+from edgeboard.server import main
 
 if __name__ == "__main__":
     main()

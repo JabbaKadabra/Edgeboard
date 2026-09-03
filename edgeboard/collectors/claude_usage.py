@@ -15,7 +15,7 @@ from typing import Iterable
 
 import httpx
 
-from xdash.collectors.claude_transcripts import UsageEvent, iter_entries, usage_events
+from edgeboard.collectors.claude_transcripts import UsageEvent, iter_entries, usage_events
 
 LABELS = {
     "five_hour": "5-hour",
@@ -25,6 +25,8 @@ LABELS = {
     "seven_day_oauth_apps": "Apps weekly",
 }
 WINDOW_LENGTH = {"five_hour": timedelta(hours=5), "seven_day": timedelta(days=7)}
+# Only the plan-wide windows are shown; per-model and extra-usage windows are dropped.
+SHOWN_WINDOWS = ("five_hour", "seven_day")
 BETA_HEADER = "oauth-2025-04-20"
 
 
@@ -100,12 +102,13 @@ def _window(key: str, utilization: float | None, resets: datetime | None, now: d
 def parse_usage_response(data: dict, now: datetime) -> list[UsageWindow]:
     """Turn the usage endpoint's JSON into ordered windows.
 
-    Any top-level key whose value is a dict carrying ``utilization`` becomes a
-    window, so new per-model windows appear without code changes.
+    Any top-level key whose value is a dict carrying ``utilization`` is a
+    window, but only ``SHOWN_WINDOWS`` (5-hour and weekly) are kept: the
+    per-model and extra-usage windows are noise on the panel.
     """
     windows: list[UsageWindow] = []
     for key, value in data.items():
-        if not isinstance(value, dict) or "utilization" not in value:
+        if key not in SHOWN_WINDOWS or not isinstance(value, dict) or "utilization" not in value:
             continue
         util = value.get("utilization")
         try:
@@ -175,7 +178,7 @@ async def fetch_usage(client: httpx.AsyncClient, token: str, url: str) -> dict:
             "Authorization": f"Bearer {token}",
             "anthropic-beta": BETA_HEADER,
             "Accept": "application/json",
-            "User-Agent": "xdash/0.1",
+            "User-Agent": "edgeboard/0.1",
         },
         timeout=15,
     )

@@ -19,13 +19,15 @@ Corsair Xeneon Edge (2560×720 touch panel) attached to an EndeavourOS
 4. System performance — CPU load + temperature, GPU load + temperature,
    memory, disk, network throughput, with short history sparklines.
 
-Visual direction follows the reference photo: dark background, orange
-accent, monospace type, pixel-art mascot, big clock, card grid of sessions.
+Visual direction: a terminal-multiplexer look (tmux-style panes with the
+title cut into the border, pipe-style progress bars) on a near-black Dracula palette with amber as the Claude highlight,
+JetBrains Mono, pixel-art mascot, big clock, card grid of sessions.
 
 ## Non-goals
 
 - Other operating systems. Linux only, tested against Arch conventions.
-- Spotify Web API integration. Local MPRIS (the desktop client) is enough.
+- Spotify Web API for playback control. MPRIS does that; the Web API is used
+  only, and optionally, for the play queue (see Spotify below).
 - Multi-user or remote access. The server binds to localhost only.
 - Persisting history across restarts. Everything is recomputed from the
   Claude Code transcript files on disk.
@@ -35,7 +37,7 @@ accent, monospace type, pixel-art mascot, big clock, card grid of sessions.
 ```
 ┌──────────────┐  poll   ┌──────────────────────────────┐   SSE   ┌────────────────┐
 │ ~/.claude/*  │◄────────│                              │────────►│                │
-│ playerctl    │◄────────│  xdash (FastAPI + uvicorn)   │  JSON   │ Chromium kiosk │
+│ playerctl    │◄────────│  edgeboard (FastAPI + uvicorn)   │  JSON   │ Chromium kiosk │
 │ psutil/sysfs │◄────────│  background collectors       │◄────────│ static HTML/JS │
 │ usage API    │◄────────│  in-memory state snapshot    │  POST   │ (touch UI)     │
 └──────────────┘         └──────────────────────────────┘         └────────────────┘
@@ -51,9 +53,9 @@ framework, vanilla JS updating the DOM in place.
 Package layout:
 
 ```
-xdash/
+edgeboard/
   __init__.py
-  __main__.py            python -m xdash
+  __main__.py            python -m edgeboard
   config.py              Settings from env vars (paths, port, intervals)
   state.py               State dataclass + to_dict()
   server.py              FastAPI app, SSE, static files, spotify POSTs
@@ -66,7 +68,7 @@ xdash/
   static/
     index.html, app.js, style.css
 scripts/kiosk.sh
-systemd/xdash.service, systemd/xdash-kiosk.service
+systemd/edgeboard.service, systemd/edgeboard-kiosk.service
 tests/
 ```
 
@@ -128,7 +130,8 @@ characters. Project = last path component of `cwd`. Model string is
 shortened (`claude-fable-5-1` → `fable-5-1`). Context tokens = last
 assistant `input + cache_read + cache_creation`.
 
-Summary counters: sessions today, done today, working now.
+Summary counters: sessions today, done today, working now. The page gets only
+the first `sessions_shown` (4) sessions after sorting; the counters cover all.
 
 ### Usage (`claude_usage.py`)
 
@@ -137,8 +140,9 @@ OAuth bearer token from `~/.claude/.credentials.json`
 (`claudeAiOauth.accessToken`) and header `anthropic-beta: oauth-2025-04-20`.
 The response is a map of window name → `{utilization, resets_at}`
 (`five_hour`, `seven_day`, `seven_day_opus`, …). Parsing is generic: every
-top-level key whose value has `utilization` becomes a bar; known keys get
-friendly labels, unknown ones are capitalized (`seven_day_fable` → "Fable weekly"). Polled every 60 s; failures
+top-level key whose value has `utilization` is a window, but only
+`five_hour` ("5-hour") and `seven_day` ("Weekly") are shown; per-model and
+extra-usage windows are dropped as noise. Polled every 60 s; failures
 keep the last good value and mark the source stale.
 
 Fallback when no token or the endpoint fails: compute from local
@@ -156,10 +160,22 @@ Always from local transcripts:
 
 Wraps `playerctl -p <player>` (default player `spotify`). One call per
 poll: `playerctl metadata --format` with a unit-separator-delimited template
-yielding status, title, artist, album, artUrl, length, position, shuffle.
+yielding status, title, artist, album, artUrl, length, position, shuffle,
+volume (the parser also accepts the older eight-field output, volume 1.0).
 Missing binary or no player → `{running: false}`. Controls run
-`playerctl play-pause | next | previous`. Album art URL (https://i.scdn.co)
-is loaded by the browser directly.
+`playerctl play-pause | next | previous`, seeking runs `playerctl position
+<seconds>` (the server converts the tapped fraction with the current track
+length), volume runs `playerctl volume <0..1>`, and skipping to a queue entry
+runs `playerctl next` index+1 times because MPRIS cannot jump into the queue.
+Album art URL (https://i.scdn.co) is loaded by the browser directly.
+
+Play queue (`spotify_queue.py`, optional): MPRIS has no queue, so the next
+tracks come from the Web API `GET /v1/me/player/queue`. A one-time
+`scripts/spotify_auth.py` login (Authorization Code + PKCE, no client secret)
+writes `{client_id, refresh_token}` to `EDGEBOARD_SPOTIFY_TOKEN_FILE`; the
+server refreshes access tokens from it and polls every 10 s while a player is
+running. Without the file the snapshot says `configured: false` and the page
+shows a hint instead of a list. Snapshot key `spotify_queue`.
 
 ### System (`system.py`)
 
@@ -183,23 +199,35 @@ is loaded by the browser directly.
   every 15 s.
 - `POST /api/spotify/{play_pause|next|previous}` → runs the command, returns
   the fresh spotify block.
-- Binds `127.0.0.1:8765` by default (`XDASH_HOST`, `XDASH_PORT`).
+- `POST /api/spotify/seek {fraction}`, `POST /api/spotify/volume {volume}`,
+  `POST /api/spotify/skip {index}` → JSON bodies validated to 0..1 (index
+  0..19), 422 otherwise; same reply shape. Demo mode only mutates its canned
+  state.
+- Binds `127.0.0.1:8765` by default (`EDGEBOARD_HOST`, `EDGEBOARD_PORT`).
 
 ### Frontend
 
 Fixed 2560×720 layout via CSS grid, but fluid enough to preview in a normal
 browser window. Four columns:
 
-1. Brand + pixel mascot + big clock + date (left, 300 px).
-2. Limits (progress bars with % and "resets in"), Today counters, 24 h burn
-   histogram, one-line system summary (620 px).
-3. Session cards grid (flexible).
-4. Spotify card (album art, track, progress, three 64 px touch buttons) over
-   system meters (CPU/GPU/MEM/DISK bars, net rates, CPU sparkline) (380 px).
+1. Pixel mascot + big clock + date (left, 300 px).
+2. Limits (5-hour and weekly bars with % and "resets in"), Today counters,
+   24 h burn histogram, then a System pane with the one-line summary
+   (CPU/GPU/MEM/DISK/net) over a CPU+GPU history trace (620 px).
+3. Session cards in a fixed 2×2 grid, large type (flexible).
+4. Spotify pane filling the column: album art, track, a 28 px seekable
+   progress bar that shows the target time while pressed, three 64 px touch
+   buttons, a slim volume slider, and the scrollable "up next" list where a
+   tap on a row skips to that track (400 px).
 
-Colours: background `#0b0d12`, panel `#141821`, accent orange `#ff9f1c`,
-working yellow `#ffd23f`, idle grey `#8b93a7`, done purple `#a78bfa`, text
-`#e8eaf0`. Monospace font stack, no web fonts (kiosk may be offline).
+Colours (Dracula on a near-black ground): background and panes `#15161d`,
+raised surfaces `#1e1f28`, borders `#363848`, text `#f8f8f2`, muted
+`#6272a4`, Claude/accent amber `#ff9f1c` (also "working"), burn bars peach
+`#ffb86c`, ok/active pane green `#50fa7b`, done purple `#bd93f9`, alerts red
+`#ff5555`, sparklines cyan `#8be9fd` and pink `#ff79c6`. JetBrains Mono is
+vendored as woff2 under `static/fonts/` (OFL) so the kiosk needs no network;
+the stack falls back to any installed monospace. Collector errors are shown
+as a red line under the clock; there is no status bar.
 
 The page reconnects the SSE stream automatically and shows a "disconnected"
 badge if no event arrives for 5 s. Mascot blinks periodically and bounces
@@ -223,19 +251,21 @@ while any session is working.
   sensor selection, model-name shortening.
 - Server smoke test with `TestClient`: `/api/state` returns the schema,
   `/api/spotify/next` calls the injected runner.
-- Manual: run `python -m xdash` on the target machine and open the page.
+- Manual: run `python -m edgeboard` on the target machine and open the page.
 
 ## Deployment (Arch)
 
 ```
 sudo pacman -S --needed python uv playerctl chromium
 uv venv && uv pip install -e .   # creates .venv from pyproject
-systemctl --user enable --now xdash.service xdash-kiosk.service
+systemctl --user enable --now edgeboard.service edgeboard-kiosk.service
 ```
 
 `scripts/kiosk.sh` launches Chromium in kiosk mode with
-`--window-position` set from `XDASH_DISPLAY_OFFSET` (the X offset of the
-Xeneon Edge in the desktop layout) and `--window-size=2560,720`.
+`--window-position` set from `EDGEBOARD_DISPLAY_OFFSET` (the X offset of the
+Xeneon Edge in the desktop layout) and `--window-size=2560,720`. It opens the
+dashboard with `?kiosk=1`, which is the only case where the page hides the
+mouse cursor (`?debug` restores it); a normal browser window keeps the cursor.
 
 ## Assumptions made without the user
 
@@ -246,7 +276,7 @@ Xeneon Edge in the desktop layout) and `--window-size=2560,720`.
    configurable.
 3. Claude limits come from the same OAuth usage endpoint Claude Code's
    `/usage` command uses; credentials are read from
-   `~/.claude/.credentials.json`. If that file lives elsewhere, `XDASH_CLAUDE_DIR`
+   `~/.claude/.credentials.json`. If that file lives elsewhere, `EDGEBOARD_CLAUDE_DIR`
    overrides the base directory.
 4. The panel runs at 2560×720 and is driven by Chromium in kiosk mode.
 5. GPU may be NVIDIA or AMD; both paths are implemented, Intel shows nothing.

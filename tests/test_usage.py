@@ -1,8 +1,8 @@
 import json
 from datetime import datetime, timedelta, timezone
 
-from xdash.collectors.claude_transcripts import UsageEvent
-from xdash.collectors.claude_usage import (
+from edgeboard.collectors.claude_transcripts import UsageEvent
+from edgeboard.collectors.claude_usage import (
     label_for,
     load_all_events,
     load_token,
@@ -20,16 +20,18 @@ def ev(hours_ago: float, output=100, input=10, cache_read=1000, cache_write=200)
     return UsageEvent(NOW - timedelta(hours=hours_ago), "claude-fable-5-1", input, output, cache_read, cache_write)
 
 
-def test_parse_usage_response_generic_windows():
+def test_parse_usage_response_keeps_plan_windows_only():
     data = {
         "five_hour": {"utilization": 6, "resets_at": "2026-09-03T16:40:00Z"},
         "seven_day": {"utilization": 2.5, "resets_at": "2026-09-08T10:00:00+00:00"},
         "seven_day_fable": {"utilization": 2, "resets_at": "2026-09-08T10:00:00Z"},
         "seven_day_opus": None,
+        "extra_usage": {"utilization": 0, "resets_at": None},
         "extra": "ignored",
     }
     windows = parse_usage_response(data, NOW)
-    assert [w.label for w in windows] == ["5-hour", "Weekly", "Fable weekly"]
+    # per-model and extra-usage windows are dropped: only the plan-wide two remain
+    assert [w.label for w in windows] == ["5-hour", "Weekly"]
     assert windows[0].utilization == 6.0
     assert windows[0].seconds_to_reset == 4 * 3600 + 10 * 60
     assert windows[1].utilization == 2.5

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from xdash.collectors.system import GpuState, SystemSampler, parse_nvidia_smi, pick_cpu_temp, read_amd_gpu
+from edgeboard.collectors.system import GpuState, SystemSampler, parse_nvidia_smi, pick_cpu_temp, read_amd_gpu
 
 T = namedtuple("shwtemp", "label current high critical")
 

@@ -9,8 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from xdash.collectors.claude_transcripts import SessionFacts, SessionParser, iter_entries, read_transcript_bytes, short_model
-from xdash.config import Settings
+from edgeboard.collectors.claude_transcripts import SessionFacts, SessionParser, iter_entries, read_transcript_bytes, short_model
+from edgeboard.config import Settings
 
 WORKING = "working"
 IDLE = "idle"
@@ -213,13 +213,14 @@ def collect_sessions(
 
     order = {WORKING: 0, IDLE: 1, DONE: 2}
     sessions.sort(key=lambda s: (order.get(s.status, 3), -(_epoch(s.last_activity))))
+    # The summary counts everything; the page only gets the first few cards.
     summary = {
         "today": len(sessions) + hidden_done,
         "done": sum(1 for s in sessions if s.status == DONE) + hidden_done,
         "working": sum(1 for s in sessions if s.status == WORKING),
         "idle": sum(1 for s in sessions if s.status == IDLE),
     }
-    return sessions, summary
+    return sessions[: settings.sessions_shown], summary
 
 
 def _epoch(iso: str | None) -> float:

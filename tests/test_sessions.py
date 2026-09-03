@@ -4,9 +4,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from xdash.collectors.claude_sessions import DONE, IDLE, WORKING, classify, collect_sessions, find_transcript
-from xdash.collectors.claude_transcripts import SessionFacts
-from xdash.config import Settings
+from edgeboard.collectors.claude_sessions import DONE, IDLE, WORKING, classify, collect_sessions, find_transcript
+from edgeboard.collectors.claude_transcripts import SessionFacts
+from edgeboard.config import Settings
 from tests.fixtures import SESSION, assistant_line, user_line
 
 
@@ -70,7 +70,7 @@ def test_collect_sessions_missing_dir(tmp_path):
 
 
 def test_load_facts_caches_until_file_changes(tmp_path):
-    from xdash.collectors.claude_sessions import load_facts
+    from edgeboard.collectors.claude_sessions import load_facts
 
     path = tmp_path / "s.jsonl"
     path.write_text(user_line("First") + "\n")
@@ -104,8 +104,19 @@ def test_summary_today_counts_finished_sessions_beyond_display_limit(tmp_path):
     assert summary == {"today": 5, "done": 4, "working": 1, "idle": 0}
 
 
+def test_sessions_shown_caps_cards_but_not_summary(tmp_path):
+    settings = _write_claude_dir(tmp_path)
+    projects = tmp_path / "projects" / "-home-me-proj"
+    for i in range(4):
+        (projects / f"77777777-0000-0000-0000-00000000000{i}.jsonl").write_text("\n".join([user_line(f"Extra {i}"), assistant_line("m")]))
+    settings = Settings(claude_dir=tmp_path, sessions_shown=2)
+    sessions, summary = collect_sessions(settings, pid_alive=lambda pid: pid == 4242)
+    assert [s.status for s in sessions] == [WORKING, DONE]  # working sorts first, then the cap applies
+    assert summary == {"today": 6, "done": 5, "working": 1, "idle": 0}
+
+
 def test_os_pid_alive_requires_claude_cmdline(tmp_path):
-    from xdash.collectors.claude_sessions import os_pid_alive
+    from edgeboard.collectors.claude_sessions import os_pid_alive
 
     proc = tmp_path / "proc"
     (proc / "1").mkdir(parents=True)
@@ -144,7 +155,7 @@ def test_headless_session_written_just_now_is_working(tmp_path):
 
 
 def test_load_facts_reads_only_appended_bytes(tmp_path):
-    from xdash.collectors.claude_sessions import load_facts
+    from edgeboard.collectors.claude_sessions import load_facts
 
     path = tmp_path / "s.jsonl"
     first = user_line("First prompt") + "\n"
@@ -160,7 +171,7 @@ def test_load_facts_reads_only_appended_bytes(tmp_path):
 
 
 def test_load_facts_reparses_when_file_shrinks(tmp_path):
-    from xdash.collectors.claude_sessions import load_facts
+    from edgeboard.collectors.claude_sessions import load_facts
 
     path = tmp_path / "s.jsonl"
     path.write_text("\n".join([user_line("Long first prompt title here"), assistant_line("m1"), assistant_line("m2")]))
@@ -171,7 +182,7 @@ def test_load_facts_reparses_when_file_shrinks(tmp_path):
 
 
 def test_load_facts_waits_for_a_complete_line(tmp_path):
-    from xdash.collectors.claude_sessions import load_facts
+    from edgeboard.collectors.claude_sessions import load_facts
 
     path = tmp_path / "s.jsonl"
     path.write_text(user_line("First") + "\n")

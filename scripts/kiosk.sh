@@ -2,26 +2,26 @@
 # Launch Chromium in kiosk mode on the Corsair Xeneon Edge.
 #
 # Environment:
-#   XDASH_URL             dashboard URL (default http://127.0.0.1:8765)
-#   XDASH_DISPLAY_OFFSET  "X,Y" position of the Xeneon Edge in the desktop layout (default 0,0)
-#   XDASH_DISPLAY_SIZE    "W,H" panel size (default 2560,720)
-#   XDASH_BROWSER         browser binary (default: chromium, then google-chrome-stable, brave)
+#   EDGEBOARD_URL             dashboard URL (default http://127.0.0.1:8765)
+#   EDGEBOARD_DISPLAY_OFFSET  "X,Y" position of the Xeneon Edge in the desktop layout (default 0,0)
+#   EDGEBOARD_DISPLAY_SIZE    "W,H" panel size (default 2560,720)
+#   EDGEBOARD_BROWSER         browser binary (default: chromium, then google-chrome-stable, brave)
 #
 # Under X11 the --window-position flag places the window on the right output.
 # Under Wayland compositors window placement is up to the compositor; add a
-# window rule for the "xdash" app class (e.g. in Hyprland:
-#   windowrule = monitor DP-3, class:^(xdash)$
-#   windowrule = fullscreen, class:^(xdash)$ )
+# window rule for the "edgeboard" app class (e.g. in Hyprland:
+#   windowrule = monitor DP-3, class:^(edgeboard)$
+#   windowrule = fullscreen, class:^(edgeboard)$ )
 # or run this from that monitor's workspace.
 set -euo pipefail
 
-URL="${XDASH_URL:-http://127.0.0.1:8765}"
-OFFSET="${XDASH_DISPLAY_OFFSET:-0,0}"
-SIZE="${XDASH_DISPLAY_SIZE:-2560,720}"
-PROFILE="${XDG_STATE_HOME:-$HOME/.local/state}/xdash-kiosk"
+URL="${EDGEBOARD_URL:-http://127.0.0.1:8765}"
+OFFSET="${EDGEBOARD_DISPLAY_OFFSET:-0,0}"
+SIZE="${EDGEBOARD_DISPLAY_SIZE:-2560,720}"
+PROFILE="${XDG_STATE_HOME:-$HOME/.local/state}/edgeboard-kiosk"
 
 pick_browser() {
-  if [[ -n "${XDASH_BROWSER:-}" ]]; then echo "$XDASH_BROWSER"; return; fi
+  if [[ -n "${EDGEBOARD_BROWSER:-}" ]]; then echo "$EDGEBOARD_BROWSER"; return; fi
   for b in chromium google-chrome-stable brave; do
     if command -v "$b" >/dev/null 2>&1; then echo "$b"; return; fi
   done
@@ -53,9 +53,12 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 
+# ?kiosk=1 makes the page hide the mouse cursor (add ?debug to get it back).
+case "$URL" in *\?*) KIOSK_URL="$URL&kiosk=1" ;; *) KIOSK_URL="$URL?kiosk=1" ;; esac
+
 exec "$BROWSER" \
-  --kiosk "$URL" \
-  --class=xdash --user-data-dir="$PROFILE" \
+  --kiosk "$KIOSK_URL" \
+  --class=edgeboard --user-data-dir="$PROFILE" \
   --window-position="$OFFSET" --window-size="$SIZE" \
   --touch-events=enabled --disable-pinch --enable-features=OverlayScrollbar \
   --noerrdialogs --disable-infobars --disable-session-crashed-bubble \

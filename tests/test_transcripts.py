@@ -1,4 +1,4 @@
-from xdash.collectors.claude_transcripts import (
+from edgeboard.collectors.claude_transcripts import (
     clean_prompt,
     iter_entries,
     session_facts,
@@ -71,7 +71,7 @@ def test_short_model():
 
 
 def test_read_transcript_large_file_keeps_head_and_tail(tmp_path):
-    from xdash.collectors.claude_transcripts import read_head, read_tail, read_transcript
+    from edgeboard.collectors.claude_transcripts import read_head, read_tail, read_transcript
 
     path = tmp_path / "s.jsonl"
     lines = [user_line("First prompt title")] + [assistant_line(f"m{i}", stop_reason="end_turn") for i in range(2000)] + [assistant_line("last", stop_reason="tool_use")]

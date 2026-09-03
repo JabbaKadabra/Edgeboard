@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from xdash import __version__
+from edgeboard import __version__
 
 
 @dataclass
@@ -24,6 +24,9 @@ class State:
     sessions: list[dict] = field(default_factory=list)
     sessions_summary: dict = field(default_factory=lambda: {"today": 0, "done": 0, "working": 0, "idle": 0})
     spotify: dict = field(default_factory=lambda: {"running": False, "available": True})
+    # Upcoming tracks from the Spotify Web API; ``configured`` is False until
+    # scripts/spotify_auth.py has written a token file.
+    spotify_queue: dict = field(default_factory=lambda: {"configured": False, "tracks": []})
     system: dict | None = None
     errors: dict[str, str | None] = field(default_factory=lambda: {"usage": None, "sessions": None, "spotify": None, "system": None})
 
@@ -35,6 +38,7 @@ class State:
             "sessions": self.sessions,
             "sessions_summary": self.sessions_summary,
             "spotify": self.spotify,
+            "spotify_queue": self.spotify_queue,
             "system": self.system,
             "errors": self.errors,
         }

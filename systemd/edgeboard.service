@@ -1,0 +1,17 @@
+[Unit]
+Description=edgeboard dashboard server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Dashboard
+ExecStart=%h/Dashboard/.venv/bin/python -m edgeboard
+# Settings live in ~/Dashboard/.env (see .env.example); Environment= lines
+# below override it.
+EnvironmentFile=-%h/Dashboard/.env
+# Environment=EDGEBOARD_PORT=8765
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

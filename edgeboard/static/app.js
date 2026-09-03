@@ -1,4 +1,4 @@
-/* xdash front-end: renders the snapshot pushed over Server-Sent Events. */
+/* edgeboard front-end: renders the snapshot pushed over Server-Sent Events. */
 (function () {
   "use strict";
 
@@ -60,16 +60,9 @@
   function setText(el, value) { if (el && el.textContent !== String(value)) el.textContent = String(value); }
   function text(id, value) { setText($(id), value); }
   function heat(pct) { return pct >= 90 ? "hot" : pct >= 70 ? "warm" : ""; }
-  function setBar(id, pct) {
-    const el = $(id);
-    if (!el) return;
-    const p = Math.max(0, Math.min(100, Number(pct) || 0));
-    el.style.width = p + "%";
-    el.className = "bar-fill " + heat(p);
-  }
 
   // ---------- mascot ----------
-  function drawPixels(svg, withEyes) {
+  function drawMascot(svg) {
     svg.innerHTML = "";
     MASCOT.forEach((row, y) => {
       [...row].forEach((ch, x) => {
@@ -79,17 +72,14 @@
         svg.appendChild(r);
       });
     });
-    if (withEyes) {
-      EYES.forEach(([y, x]) => {
-        const r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-        r.setAttribute("x", x); r.setAttribute("y", y); r.setAttribute("width", 1); r.setAttribute("height", 1);
-        r.setAttribute("class", "eye");
-        svg.appendChild(r);
-      });
-    }
+    EYES.forEach(([y, x]) => {
+      const r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      r.setAttribute("x", x); r.setAttribute("y", y); r.setAttribute("width", 1); r.setAttribute("height", 1);
+      r.setAttribute("class", "eye");
+      svg.appendChild(r);
+    });
   }
-  drawPixels(document.querySelector(".brand-icon"), false);
-  drawPixels($("mascot"), true);
+  drawMascot($("mascot"));
 
   // ---------- clock ----------
   function tickClock() {
@@ -108,9 +98,6 @@
     const windows = usage.windows || [];
     const source = usage.source;
     text("usage-source", source === "api" ? (usage.stale ? "stale" : "by plan") : source === "local" ? "estimated" : source === "demo" ? "demo" : "");
-    const chip = $("chip-claude");
-    chip.className = "chip " + ((source === "api" && !usage.stale) || source === "demo" ? "ok" : source === "local" || usage.stale ? "warn" : errors.usage ? "bad" : "");
-    chip.title = errors.usage || "";
 
     limits.innerHTML = "";
     if (!windows.length) {
@@ -228,12 +215,10 @@
   let np = { running: false, position_s: 0, length_s: 0, status: "", updatedAt: 0 };
   function renderSpotify(sp, errors) {
     const panel = $("spotify");
-    const chip = $("chip-spotify");
     np = Object.assign({}, sp, { updatedAt: Date.now() });
     panel.classList.toggle("offline", !sp.running);
     panel.classList.toggle("paused", sp.status !== "Playing");
-    chip.className = "chip " + (sp.running ? (sp.status === "Playing" ? "ok" : "warn") : sp.available === false ? "bad" : "");
-    chip.title = sp.available === false ? "playerctl not installed" : errors.spotify || "";
+    text("np-state", sp.running ? (sp.status || "").toLowerCase() + (sp.shuffle ? " · shuffle" : "") : "offline");
     if (!sp.running) {
       text("np-title", sp.available === false ? "playerctl missing" : "Spotify not running");
       text("np-artist", ""); text("np-album", "");
@@ -243,6 +228,7 @@
       text("btn-play", "▶");
       return;
     }
+    setVolumeSlider(sp.volume);
     text("np-title", sp.title || "—");
     text("np-artist", sp.artist || "");
     text("np-album", sp.album || "");
@@ -258,6 +244,28 @@
     }
     tickProgress();
   }
+  // Up next: from the Spotify Web API (MPRIS has no queue). Rows are rebuilt
+  // only when the list actually changes so the panel does not flicker.
+  const QUEUE_HINT = 'no queue: run <code>scripts/spotify_auth.py</code> once to show upcoming tracks';
+  let queueKey = "";
+  function renderQueue(q, sp, errors) {
+    const tracks = (q && q.tracks) || [];
+    const box = $("queue"), empty = $("queue-empty");
+    text("queue-count", tracks.length ? `${tracks.length} · ${fmtDuration(tracks.reduce((a, t) => a + (t.length_s || 0), 0))}` : "");
+    const key = JSON.stringify(tracks.map((t) => [t.title, t.artist, t.length_s]));
+    if (key !== queueKey) {
+      queueKey = key;
+      box.innerHTML = tracks.map((t, i) => `<li data-index="${i}">
+        <span class="q-n">${i + 1}</span>
+        <span class="q-main"><span class="q-title">${escapeHtml(t.title)}</span><br><span class="q-artist">${escapeHtml(t.artist)}${t.album ? " · " + escapeHtml(t.album) : ""}</span></span>
+        <span class="q-len">${t.length_s ? fmtClockSecs(t.length_s) : ""}</span></li>`).join("");
+    }
+    if (!sp.running) { empty.hidden = true; return; }
+    empty.hidden = tracks.length > 0;
+    if (tracks.length) return;
+    const msg = !q || !q.configured ? QUEUE_HINT : errors.spotify ? escapeHtml(errors.spotify) : "queue is empty";
+    if (empty.innerHTML !== msg) empty.innerHTML = msg;
+  }
   function tickProgress() {
     if (!np.running) return;
     let pos = np.position_s || 0;
@@ -269,6 +277,89 @@
     text("np-len", fmtClockSecs(len));
   }
   setInterval(tickProgress, 1000);
+  async function postSpotify(path, body) {
+    try {
+      const r = await fetch(`/api/spotify/${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const data = await r.json();
+      if (data.spotify) renderSpotify(data.spotify, {});
+      return data;
+    } catch (e) { return null; /* the next snapshot will correct the view */ }
+  }
+
+  // Both bars share one press/drag/release handler: the fraction under the
+  // finger is reported while pressed and committed on release.
+  function dragBar(bar, { onMove, onEnd, enabled }) {
+    let fraction = null;
+    const at = (ev) => {
+      const r = bar.getBoundingClientRect();
+      return r.width ? Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)) : 0;
+    };
+    bar.addEventListener("pointerdown", (ev) => {
+      if (!enabled()) return;
+      bar.setPointerCapture(ev.pointerId);
+      bar.classList.add("seeking");
+      onMove(fraction = at(ev));
+    });
+    bar.addEventListener("pointermove", (ev) => { if (fraction !== null) onMove(fraction = at(ev)); });
+    const finish = (ev, commit) => {
+      if (fraction === null) return;
+      const f = commit ? at(ev) : fraction;
+      fraction = null;
+      bar.classList.remove("seeking");
+      onEnd(f, commit);
+    };
+    bar.addEventListener("pointerup", (ev) => finish(ev, true));
+    bar.addEventListener("pointercancel", (ev) => finish(ev, false));
+    return () => fraction !== null;  // "is the finger down?"
+  }
+
+  // Seek: the target time rides along with the finger; the fill moves on release.
+  const seekLabel = $("np-seek");
+  dragBar($("np-progress"), {
+    enabled: () => np.running && np.length_s > 0,
+    onMove: (f) => {
+      seekLabel.hidden = false;
+      seekLabel.style.left = Math.min(Math.max(f * 100, 6), 94) + "%";
+      seekLabel.textContent = fmtClockSecs(f * (np.length_s || 0));
+    },
+    onEnd: (f, commit) => {
+      seekLabel.hidden = true;
+      if (!commit) return;
+      np.position_s = f * (np.length_s || 0); np.updatedAt = Date.now();
+      tickProgress();
+      postSpotify("seek", { fraction: f });
+    },
+  });
+
+  // Volume: the bar is the source of truth while the finger is on it, so
+  // snapshots do not yank the fill back mid-drag.
+  function paintVolume(v) {
+    $("np-volume-fill").style.width = v * 100 + "%";
+    text("np-volume-pct", Math.round(v * 100) + "%");
+  }
+  const volumeDragging = dragBar($("np-volume"), {
+    enabled: () => np.running,
+    onMove: paintVolume,
+    onEnd: (f, commit) => { if (commit) { paintVolume(f); postSpotify("volume", { volume: f }); } },
+  });
+  function setVolumeSlider(v) {
+    if (!volumeDragging() && typeof v === "number") paintVolume(v);
+  }
+
+  // Tap a queued track to skip to it: MPRIS has no "jump", so the server
+  // presses next index+1 times. The tapped row and everything above it go
+  // away at once; the reply carries the trimmed queue so the page and the
+  // next snapshots agree.
+  $("queue").addEventListener("click", async (ev) => {
+    const li = ev.target.closest("li[data-index]");
+    if (!li || !np.running) return;
+    const index = Number(li.dataset.index);
+    for (const row of [...li.parentElement.children]) { if (Number(row.dataset.index) <= index) row.remove(); }
+    queueKey = "";  // whatever arrives next rebuilds the list, even if the request fails
+    const data = await postSpotify("skip", { index });
+    if (data && data.spotify_queue) renderQueue(data.spotify_queue, data.spotify || np, {});
+  });
+
   document.querySelectorAll(".ctl").forEach((btn) => {
     btn.addEventListener("click", async () => {
       btn.disabled = true;
@@ -283,30 +374,20 @@
 
   // ---------- system ----------
   function renderSystem(sys, errors) {
-    const chip = $("chip-sys");
-    chip.className = "chip " + (sys ? "ok" : errors.system ? "bad" : "");
-    chip.title = errors.system || "";
     if (!sys) return;
     const cpu = sys.cpu || {}, mem = sys.mem || {}, gpu = sys.gpu, disks = sys.disks || [], net = sys.net || {};
-    setBar("m-cpu", cpu.percent); text("v-cpu", `${Math.round(cpu.percent || 0)}%`);
-    text("v-cpu-temp", cpu.temp != null ? `${Math.round(cpu.temp)}°C` : (cpu.freq_mhz ? `${(cpu.freq_mhz / 1000).toFixed(1)}GHz` : ""));
-    if (gpu) {
-      setBar("m-gpu", gpu.percent); text("v-gpu", gpu.percent != null ? `${Math.round(gpu.percent)}%` : "–");
-      text("v-gpu-temp", gpu.temp != null ? `${Math.round(gpu.temp)}°C` : (gpu.mem_total ? fmtBytes(gpu.mem_used) : ""));
-    } else { setBar("m-gpu", 0); text("v-gpu", "–"); text("v-gpu-temp", "n/a"); }
-    setBar("m-mem", mem.percent); text("v-mem", `${Math.round(mem.percent || 0)}%`);
-    text("v-mem-extra", mem.total ? `${fmtBytes(mem.used)}/${fmtBytes(mem.total)}` : "");
-    const root = disks[0];
-    if (root) { setBar("m-disk", root.percent); text("v-disk", `${Math.round(root.percent)}%`); text("v-disk-extra", `${fmtBytes(root.total - root.used)} free`); }
-    $("v-net").innerHTML = `↓ <b>${fmtBytes(net.rx_bps)}/s</b> &nbsp; ↑ <b>${fmtBytes(net.tx_bps)}/s</b>`;
     text("sys-uptime", `up ${fmtDuration(sys.uptime_s)}`);
     text("sys-load", `load ${(sys.load || []).map((x) => x.toFixed(1)).join(" ")}`);
     drawSpark(sys.history || {});
+    // Current values live in the one-line summary; the trace below is history only.
+    const root = disks[0];
     $("sys-line").innerHTML = [
       `CPU <b>${Math.round(cpu.percent || 0)}%</b>${cpu.temp != null ? ` <b>${Math.round(cpu.temp)}°C</b>` : ""}`,
       gpu ? `GPU <b>${Math.round(gpu.percent || 0)}%</b>${gpu.temp != null ? ` <b>${Math.round(gpu.temp)}°C</b>` : ""}` : "",
       `MEM <b>${Math.round(mem.percent || 0)}%</b>`,
+      root ? `DISK <b>${Math.round(root.percent)}%</b>` : "",
       `↓ <b>${fmtBytes(net.rx_bps)}/s</b>`,
+      `↑ <b>${fmtBytes(net.tx_bps)}/s</b>`,
     ].filter(Boolean).map((s) => `<span>${s}</span>`).join("");
   }
   const SPARK_W = 120, SPARK_H = 40;
@@ -322,12 +403,6 @@
   }
   function drawSpark(hist) {
     $("spark-cpu").innerHTML = sparkArea(hist.cpu, "fill", 100) + sparkLine(hist.gpu, "gpu", 100) + sparkLine(hist.cpu, "cpu", 100);
-    const rx = hist.rx || [], tx = hist.tx || [];
-    let max = 1;
-    for (const v of rx) if (v > max) max = v;
-    for (const v of tx) if (v > max) max = v;
-    $("spark-net").innerHTML = sparkArea(rx, "fill-rx", max) + sparkLine(rx, "rx", max) + sparkLine(tx, "tx", max);
-    text("net-peak", rx.length ? `peak ${fmtBytes(max)}/s` : "");
   }
 
   // ---------- render root ----------
@@ -344,6 +419,7 @@
     try { renderUsage(snap.usage || {}, errors); } catch (e) { console.error("usage", e); }
     try { renderSessions(snap.sessions || [], snap.sessions_summary || {}, now); } catch (e) { console.error("sessions", e); }
     try { renderSpotify(snap.spotify || {}, errors); } catch (e) { console.error("spotify", e); }
+    try { renderQueue(snap.spotify_queue, snap.spotify || {}, errors); } catch (e) { console.error("queue", e); }
     try { renderSystem(snap.system, errors); } catch (e) { console.error("system", e); }
   }
 
@@ -362,5 +438,7 @@
   fetch("/api/state").then((r) => r.json()).then(render).catch(() => {});
   connect();
 
-  if (location.search.includes("debug")) document.body.classList.add("debug");
+  const params = new URLSearchParams(location.search);
+  if (params.has("kiosk")) document.body.classList.add("kiosk");
+  if (params.has("debug")) document.body.classList.add("debug");
 })();

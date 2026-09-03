@@ -1,0 +1,20 @@
+[Unit]
+Description=edgeboard kiosk browser on the Xeneon Edge
+After=graphical-session.target edgeboard.service
+Wants=edgeboard.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/Dashboard/scripts/kiosk.sh
+# Set EDGEBOARD_DISPLAY_OFFSET (X,Y of the Xeneon Edge in your monitor layout) in
+# ~/Dashboard/.env, or uncomment the line below to override it here.
+EnvironmentFile=-%h/Dashboard/.env
+# Environment=EDGEBOARD_DISPLAY_OFFSET=0,0
+# DISPLAY / WAYLAND_DISPLAY must reach the user manager before this unit starts;
+# see README "Run on the Xeneon Edge" (systemctl --user import-environment).
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
