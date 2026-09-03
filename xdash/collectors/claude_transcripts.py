@@ -14,7 +14,10 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 TITLE_MAX = 60
-_TAG_RE = re.compile(r"<[^>]+>[\s\S]*?</[^>]+>|<[^>]+>")
+# Paired tags Claude Code injects into prompts (<system-reminder>…</system-reminder>,
+# <command-name>…</command-name>, …). Requires a matching closing tag so that
+# code like ``x < 5 and y > 3`` or ``List<String>`` is left alone.
+_TAG_RE = re.compile(r"<([a-zA-Z][\w-]*)>[\s\S]*?</\1>")
 _MODEL_DATE_RE = re.compile(r"-\d{8}$")
 
 
@@ -127,7 +130,15 @@ def clean_prompt(text: str, limit: int = TITLE_MAX) -> str:
     return text
 
 
+def _message(entry: dict) -> dict:
+    """The ``message`` object of an entry, or ``{}`` when missing or mis-shaped."""
+    message = entry.get("message")
+    return message if isinstance(message, dict) else {}
+
+
 def _content_blocks(message: dict) -> list[dict]:
+    if not isinstance(message, dict):
+        return []
     content = message.get("content")
     if isinstance(content, str):
         return [{"type": "text", "text": content}]
@@ -137,15 +148,15 @@ def _content_blocks(message: dict) -> list[dict]:
 
 
 def _user_kind(entry: dict) -> str:
-    blocks = _content_blocks(entry.get("message") or {})
+    blocks = _content_blocks(_message(entry))
     if any(b.get("type") == "tool_result" for b in blocks):
         return "tool_result"
     return "user_prompt"
 
 
 def _prompt_text(entry: dict) -> str:
-    parts = [b.get("text", "") for b in _content_blocks(entry.get("message") or {}) if b.get("type") == "text"]
-    return "\n".join(p for p in parts if p)
+    parts = [b.get("text", "") for b in _content_blocks(_message(entry)) if b.get("type") == "text"]
+    return "\n".join(p for p in parts if isinstance(p, str) and p)
 
 
 def _int(value) -> int:
@@ -163,27 +174,30 @@ def usage_events(entries: Iterable[dict]) -> list[UsageEvent]:
     """
     by_id: dict[str, UsageEvent] = {}
     order: list[str] = []
-    for entry in entries:
-        if entry.get("type") != "assistant":
-            continue
-        message = entry.get("message") or {}
-        usage = message.get("usage")
-        if not isinstance(usage, dict):
-            continue
-        ts = parse_ts(entry.get("timestamp"))
-        if ts is None:
-            continue
-        msg_id = message.get("id") or entry.get("requestId") or entry.get("uuid") or str(len(order))
-        if msg_id not in by_id:
-            order.append(msg_id)
-        by_id[msg_id] = UsageEvent(
-            ts=ts,
-            model=message.get("model") or "",
-            input=_int(usage.get("input_tokens")),
-            output=_int(usage.get("output_tokens")),
-            cache_read=_int(usage.get("cache_read_input_tokens")),
-            cache_write=_int(usage.get("cache_creation_input_tokens")),
-        )
+    for index, entry in enumerate(entries):
+        try:
+            if entry.get("type") != "assistant":
+                continue
+            message = _message(entry)
+            usage = message.get("usage")
+            if not isinstance(usage, dict):
+                continue
+            ts = parse_ts(entry.get("timestamp"))
+            if ts is None:
+                continue
+            msg_id = str(message.get("id") or entry.get("requestId") or entry.get("uuid") or f"#{index}")
+            if msg_id not in by_id:
+                order.append(msg_id)
+            by_id[msg_id] = UsageEvent(
+                ts=ts,
+                model=str(message.get("model") or ""),
+                input=_int(usage.get("input_tokens")),
+                output=_int(usage.get("output_tokens")),
+                cache_read=_int(usage.get("cache_read_input_tokens")),
+                cache_write=_int(usage.get("cache_creation_input_tokens")),
+            )
+        except (AttributeError, TypeError, ValueError):
+            continue  # one mis-shaped line must not take the whole file down
     return [by_id[k] for k in order]
 
 
@@ -192,48 +206,51 @@ def session_facts(entries: Iterable[dict]) -> SessionFacts:
     first_prompt = ""
     summary = ""
     seen_ids: set[str] = set()
-    for entry in entries:
-        kind = entry.get("type")
-        if kind == "summary":
-            summary = str(entry.get("summary") or "")
-            continue
-        if kind not in ("user", "assistant"):
-            continue
-        if entry.get("isSidechain"):
-            continue
-        if entry.get("cwd"):
-            facts.cwd = entry["cwd"]
-        if entry.get("gitBranch"):
-            facts.branch = entry["gitBranch"]
-        if entry.get("sessionId"):
-            facts.session_id = entry["sessionId"]
-        ts = parse_ts(entry.get("timestamp"))
-        if ts is not None:
-            facts.first_ts = facts.first_ts or ts
-            facts.last_ts = ts
-        message = entry.get("message") or {}
-        if kind == "user":
-            if entry.get("isMeta"):
+    for index, entry in enumerate(entries):
+        try:
+            kind = entry.get("type")
+            if kind == "summary":
+                summary = str(entry.get("summary") or "")
                 continue
-            facts.last_kind = _user_kind(entry)
-            facts.last_stop_reason = ""
-            if facts.last_kind == "user_prompt" and not first_prompt:
-                first_prompt = clean_prompt(_prompt_text(entry))
-        else:
-            facts.last_kind = "assistant"
-            facts.last_stop_reason = message.get("stop_reason") or ""
-            if message.get("model"):
-                facts.model = message["model"]
-            usage = message.get("usage")
-            if isinstance(usage, dict):
-                facts.context_tokens = (
-                    _int(usage.get("input_tokens"))
-                    + _int(usage.get("cache_read_input_tokens"))
-                    + _int(usage.get("cache_creation_input_tokens"))
-                )
-            msg_id = message.get("id") or entry.get("uuid")
-            if msg_id and msg_id not in seen_ids:
-                seen_ids.add(msg_id)
-                facts.assistant_messages += 1
+            if kind not in ("user", "assistant"):
+                continue
+            if entry.get("isSidechain") or (kind == "user" and entry.get("isMeta")):
+                continue
+            if isinstance(entry.get("cwd"), str) and entry["cwd"]:
+                facts.cwd = entry["cwd"]
+            if isinstance(entry.get("gitBranch"), str) and entry["gitBranch"]:
+                facts.branch = entry["gitBranch"]
+            if isinstance(entry.get("sessionId"), str) and entry["sessionId"]:
+                facts.session_id = entry["sessionId"]
+            ts = parse_ts(entry.get("timestamp"))
+            if ts is not None:
+                facts.first_ts = facts.first_ts or ts
+                facts.last_ts = ts
+            message = _message(entry)
+            if kind == "assistant" and not message:
+                continue  # an assistant line without a message object carries nothing usable
+            if kind == "user":
+                facts.last_kind = _user_kind(entry)
+                facts.last_stop_reason = ""
+                if facts.last_kind == "user_prompt" and not first_prompt:
+                    first_prompt = clean_prompt(_prompt_text(entry))
+            else:
+                facts.last_kind = "assistant"
+                facts.last_stop_reason = str(message.get("stop_reason") or "")
+                if isinstance(message.get("model"), str) and message["model"]:
+                    facts.model = message["model"]
+                usage = message.get("usage")
+                if isinstance(usage, dict):
+                    facts.context_tokens = (
+                        _int(usage.get("input_tokens"))
+                        + _int(usage.get("cache_read_input_tokens"))
+                        + _int(usage.get("cache_creation_input_tokens"))
+                    )
+                msg_id = str(message.get("id") or entry.get("uuid") or f"#{index}")
+                if msg_id not in seen_ids:
+                    seen_ids.add(msg_id)
+                    facts.assistant_messages += 1
+        except (AttributeError, TypeError, ValueError):
+            continue  # skip mis-shaped entries instead of failing the whole session
     facts.title = clean_prompt(summary) if summary else first_prompt
     return facts

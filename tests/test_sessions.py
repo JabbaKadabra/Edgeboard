@@ -67,3 +67,27 @@ def test_collect_sessions_dead_pid_marks_done(tmp_path):
 def test_collect_sessions_missing_dir(tmp_path):
     sessions, summary = collect_sessions(Settings(claude_dir=tmp_path / "missing"))
     assert sessions == [] and summary["today"] == 0
+
+
+def test_load_facts_caches_until_file_changes(tmp_path):
+    from xdash.collectors.claude_sessions import load_facts
+
+    path = tmp_path / "s.jsonl"
+    path.write_text(user_line("First"))
+    facts1, _ = load_facts(path)
+    facts2, _ = load_facts(path)
+    assert facts1 is facts2 and facts1.title == "First"
+    with path.open("a") as fh:
+        fh.write("\n" + assistant_line("m1", stop_reason="tool_use"))
+    facts3, _ = load_facts(path)
+    assert facts3 is not facts1 and facts3.last_stop_reason == "tool_use"
+
+
+def test_collect_sessions_prefers_newest_pid_file(tmp_path):
+    settings = _write_claude_dir(tmp_path)
+    (tmp_path / "sessions" / "100.json").write_text(
+        json.dumps({"pid": 100, "sessionId": SESSION, "cwd": "/home/me/proj", "startedAt": 1})
+    )
+    sessions, _ = collect_sessions(settings, pid_alive=lambda pid: pid == 4242)
+    live = [s for s in sessions if s.id == SESSION]
+    assert len(live) == 1 and live[0].status == WORKING

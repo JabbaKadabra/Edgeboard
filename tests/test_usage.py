@@ -80,3 +80,13 @@ def test_load_all_events(tmp_path):
     (proj / "b.jsonl").write_text(assistant_line("m2", when=ts(50, NOW)))
     events = load_all_events(tmp_path, NOW - timedelta(hours=24))
     assert [e.output for e in events] == [9]
+
+
+def test_load_all_events_includes_subagents(tmp_path):
+    proj = tmp_path / "projects" / "-x"
+    sub = proj / "sess" / "subagents"
+    sub.mkdir(parents=True)
+    (proj / "sess.jsonl").write_text(assistant_line("main", when=ts(1, NOW), output_tokens=5))
+    (sub / "agent-1.jsonl").write_text(assistant_line("agent", when=ts(1, NOW), output_tokens=7))
+    events = load_all_events(tmp_path, NOW - timedelta(hours=24))
+    assert sorted(e.output for e in events) == [5, 7]

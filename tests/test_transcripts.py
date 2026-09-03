@@ -84,3 +84,22 @@ def test_read_transcript_large_file_keeps_head_and_tail(tmp_path):
     assert read_tail(path, 500).strip().endswith("}")
     small = read_transcript(path)
     assert session_facts(iter_entries(small)).assistant_messages == 2001
+
+
+def test_mis_shaped_entries_are_skipped():
+    import json
+
+    bad_message = json.dumps({"type": "user", "message": ["oops"], "timestamp": ts(), "cwd": 5})
+    bad_usage = json.dumps({"type": "assistant", "message": {"usage": "nope", "id": "z"}, "timestamp": ts()})
+    no_message = json.dumps({"type": "assistant", "message": "garbage", "timestamp": ts()})
+    text = "\n".join([bad_message, bad_usage, no_message, user_line("Real prompt"), assistant_line("m1")])
+    facts = session_facts(iter_entries(text))
+    assert facts.title == "Real prompt"
+    assert facts.assistant_messages == 2  # "z" is a real assistant message with broken usage; "garbage" is not
+    assert [e.output for e in usage_events(iter_entries(text))] == [100]
+
+
+def test_clean_prompt_keeps_code_angle_brackets():
+    assert clean_prompt("fix the bug where x < 5 and y > 3 causes a crash") == "fix the bug where x < 5 and y > 3 causes a crash"
+    assert clean_prompt("Use generics like List<String> in java") == "Use generics like List<String> in java"
+    assert clean_prompt("<system-reminder>\nnoise\n</system-reminder>\nReal") == "Real"

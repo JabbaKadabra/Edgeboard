@@ -86,13 +86,30 @@ def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
 
 
+# Parsed facts per transcript, keyed by (mtime_ns, size). Transcripts are
+# append-only, so an unchanged file yields the same facts; this keeps the 2 s
+# poll from re-parsing megabytes of idle sessions.
+_facts_cache: dict[Path, tuple[tuple[int, int], SessionFacts]] = {}
+
+
+def load_facts(path: Path) -> tuple[SessionFacts, datetime]:
+    st = path.stat()
+    key = (st.st_mtime_ns, st.st_size)
+    cached = _facts_cache.get(path)
+    if cached is not None and cached[0] == key:
+        facts = cached[1]
+    else:
+        facts = session_facts(iter_entries(read_transcript(path)))
+        _facts_cache[path] = (key, facts)
+    return facts, datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
+
+
 def _build(session_id: str, path: Path | None, alive: bool, started_ms: int | None, fallback_cwd: str) -> Session:
     facts = SessionFacts()
     mtime: datetime | None = None
     if path is not None:
         try:
-            facts = session_facts(iter_entries(read_transcript(path)))
-            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            facts, mtime = load_facts(path)
         except OSError:
             pass
     status, detail = classify(facts, alive)
@@ -122,6 +139,8 @@ def collect_sessions(
     now = now or datetime.now(timezone.utc)
     local_midnight = now.astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
     live = _live_sessions(settings.claude_dir, pid_alive)
+    # Newest process wins when a resumed session left a stale pid file behind.
+    live.sort(key=lambda info: (info.get("_alive", False), info.get("startedAt") or 0), reverse=True)
     sessions: list[Session] = []
     seen: set[str] = set()
     for info in live:
@@ -149,6 +168,8 @@ def collect_sessions(
     for _, path in finished[: settings.done_sessions_limit]:
         seen.add(path.stem)
         sessions.append(_build(path.stem, path, False, None, ""))
+    for stale in [p for p in _facts_cache if p.stem not in seen]:
+        _facts_cache.pop(stale, None)
 
     order = {WORKING: 0, IDLE: 1, DONE: 2}
     sessions.sort(key=lambda s: (order.get(s.status, 3), -(_epoch(s.last_activity))))

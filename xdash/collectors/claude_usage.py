@@ -186,13 +186,21 @@ async def fetch_usage(client: httpx.AsyncClient, token: str, url: str) -> dict:
     return data
 
 
+TRANSCRIPT_GLOBS = ("*/*.jsonl", "*/*/subagents/*.jsonl")
+
+
 def load_all_events(claude_dir: Path, since: datetime) -> list[UsageEvent]:
-    """Usage events from every transcript modified after ``since``."""
+    """Usage events from every transcript modified after ``since``.
+
+    Subagent transcripts (``<project>/<session>/subagents/*.jsonl``) are
+    included: their tokens count against the same limits.
+    """
     projects = claude_dir / "projects"
     events: list[UsageEvent] = []
     if not projects.is_dir():
         return events
-    for path in projects.glob("*/*.jsonl"):
+    paths = [p for pattern in TRANSCRIPT_GLOBS for p in projects.glob(pattern)]
+    for path in paths:
         try:
             if path.stat().st_mtime < since.timestamp():
                 continue

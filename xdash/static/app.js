@@ -108,7 +108,7 @@
     const source = usage.source;
     text("usage-source", source === "api" ? (usage.stale ? "stale" : "by plan") : source === "local" ? "estimated" : source === "demo" ? "demo" : "");
     const chip = $("chip-claude");
-    chip.className = "chip " + (source === "api" && !usage.stale ? "ok" : source === "local" || usage.stale ? "warn" : errors.usage ? "bad" : "");
+    chip.className = "chip " + ((source === "api" && !usage.stale) || source === "demo" ? "ok" : source === "local" || usage.stale ? "warn" : errors.usage ? "bad" : "");
     chip.title = errors.usage || "";
 
     limits.innerHTML = "";
@@ -123,7 +123,7 @@
       const pctText = pct == null ? (w.tokens != null ? fmtTokens(w.tokens) + " tok" : "n/a") : Math.round(pct) + "%";
       const reset = w.seconds_to_reset != null ? `resets in ${fmtDuration(w.seconds_to_reset)} · ${fmtResetAt(w.resets_at)}` : "no activity in window";
       div.innerHTML = `
-        <div class="limit-label">${w.label}</div>
+        <div class="limit-label">${escapeHtml(w.label)}</div>
         <div class="limit-pct ${pctClass}">${pctText}</div>
         <div class="bar"><div class="bar-fill ${heat(pct || 0)}" style="width:${Math.max(0, Math.min(100, pct || 0))}%"></div></div>
         <div class="limit-reset">${reset}</div>`;
