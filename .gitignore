@@ -6,3 +6,4 @@ uv.lock
 *.png
 .env
 .superpowers/
+tests/artifacts/

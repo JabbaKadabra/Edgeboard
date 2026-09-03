@@ -13,6 +13,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+# tests/test_page.py: renders the demo page in Chromium at the panel's 2560x720
+browser = ["playwright>=1.45"]
 
 [project.scripts]
 edgeboard = "edgeboard.server:main"
@@ -26,3 +28,4 @@ packages = ["edgeboard"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["browser: needs Playwright and Chromium (pip install -e '.[browser]' && playwright install chromium)"]
