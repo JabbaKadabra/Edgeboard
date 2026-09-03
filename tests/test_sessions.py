@@ -345,3 +345,24 @@ def test_collect_sessions_merges_hooks_and_sorts_attention_first(tmp_path):
     # an unknown session id in the hook map is ignored
     sessions, _ = collect_sessions(settings, now, pid_alive=lambda pid: pid == 4242, hooks={"nope": hooks[SESSION]})
     assert sessions[0].status == WORKING
+
+
+# ---------- attention alerts ----------
+
+
+def test_attention_transitions_only_when_a_session_starts_needing_you():
+    from edgeboard.collectors.claude_sessions import attention_transitions
+
+    def s(i, status):
+        return {"id": f"s{i}", "status": status, "name": f"n{i}", "detail": ""}
+
+    # first sighting never alerts, whatever the status
+    assert attention_transitions({}, [s(1, "idle"), s(2, "attention")]) == []
+    prev = {"s1": "working", "s2": "working", "s3": "idle", "s4": "attention", "s5": "working"}
+    got = attention_transitions(prev, [s(1, "idle"), s(2, "attention"), s(3, "idle"), s(4, "attention"), s(5, "done"), s(6, "idle")])
+    # working -> idle and anything -> attention alert; staying put, finishing and new sessions do not
+    assert [x["id"] for x in got] == ["s1", "s2"]
+    # idle -> attention alerts too (a question after Claude was already waiting)
+    assert [x["id"] for x in attention_transitions({"s3": "idle"}, [s(3, "attention")])] == ["s3"]
+    # a stopped session that comes back to idle from done does not
+    assert attention_transitions({"s5": "done"}, [s(5, "idle")]) == []

@@ -101,6 +101,8 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 .mascot rect { fill: var(--accent); }
 .mascot rect.eye { fill: var(--bg); animation: blink 5s infinite; }
 .mascot rect.steam { fill: var(--muted); }
+.mascot.attention rect { fill: var(--pink); }   /* arms up: a session needs you */
+.mascot.attention rect.eye { fill: var(--bg); }
 .mascot.flash { animation: flash .3s 4; }
 @keyframes blink { 0%, 92%, 100% { opacity: 1; } 95%, 97% { opacity: 0; } }
 @keyframes flash { 0%, 100% { opacity: 1; } 50% { opacity: .15; } }
@@ -131,11 +133,14 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 
 /* ---------- column 2 ---------- */
 .limits { display: flex; flex-direction: column; gap: 10px; }
-.limit { display: grid; grid-template-columns: 1fr 96px; grid-template-rows: auto auto; column-gap: 12px; align-items: center; }
+.limit { display: grid; grid-template-columns: 1fr 96px; grid-template-rows: auto auto auto; column-gap: 12px; align-items: center; }
 .limit-label { grid-column: 1; grid-row: 1; font-size: 15px; text-transform: lowercase; }
 .limit-reset { grid-column: 1; grid-row: 1; justify-self: end; font-size: 13px; color: var(--muted); }
 .limit .bar { grid-column: 1; grid-row: 2; margin-top: 4px; }
-.limit-pct { grid-column: 2; grid-row: 1 / span 2; justify-self: end; font-size: 30px; font-weight: 800; color: var(--accent); line-height: 1; }
+/* pace projection under the bar: amber when the window fills before it resets */
+.limit-pace { grid-column: 1; grid-row: 3; font-size: 13px; color: var(--muted); margin-top: 3px; }
+.limit-pace.warn { color: var(--accent-2); }
+.limit-pct { grid-column: 2; grid-row: 1 / span 3; justify-self: end; font-size: 30px; font-weight: 800; color: var(--accent); line-height: 1; }
 .limit-pct.high { color: var(--bad); }
 .limit-pct.mid { color: var(--accent-2); }
 .limit-pct.na { font-size: 15px; color: var(--muted); font-weight: 400; }
@@ -182,6 +187,10 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 .card.working { border-color: var(--accent); }
 .card.attention { border-color: var(--pink); }   /* blocked on you: permission prompt or question (from hooks) */
 .card.done { opacity: .6; }
+/* attention alert: a few flashes when the card starts needing you, then a double border until its status changes */
+.card.alert { animation: card-flash .35s 4; border-color: var(--accent-2); box-shadow: inset 0 0 0 1px var(--accent-2); }
+.card.attention.alert { border-color: var(--pink); box-shadow: inset 0 0 0 1px var(--pink); }
+@keyframes card-flash { 50% { background: var(--panel-2); border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); } }
 .card-top { display: flex; justify-content: space-between; align-items: baseline; font-size: 16px; }
 .pill { font-weight: 400; }
 .pill::before { content: "●"; margin-right: .45em; }

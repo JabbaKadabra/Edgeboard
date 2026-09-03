@@ -68,7 +68,7 @@ def test_mascot_is_pomodoro_tap_target_not_bouncing():
     html = (STATIC / "index.html").read_text()
     js = (STATIC / "app.js").read_text()
     css = (STATIC / "style.css").read_text()
-    # the mascot no longer bobs while sessions work
+    # the mascot no longer bobs while sessions work (it only changes pose on attention alerts, via drawClaude)
     assert "bounce" not in css
     sessions_js = js.split("function renderSessions")[1].split("function escapeHtml")[0]
     assert "mascot" not in sessions_js
@@ -114,3 +114,40 @@ def test_session_cards_show_agents_attention_and_open_an_overlay():
     # dismissed by tapping the backdrop or after 20 s
     assert "20 * 1000" in sessions_js or "20000" in sessions_js
     assert '$("overlay").addEventListener("click"' in sessions_js
+
+
+def test_server_unit_restarts_after_clean_exit():
+    # A clean exit (stray pkill) must not leave the kiosk on "disconnected", and a
+    # crash loop during a bad deploy must not park the unit for good.
+    unit = (ROOT / "systemd" / "edgeboard.service").read_text()
+    assert re.search(r"^Restart=always$", unit, re.M)
+    assert re.search(r"^RestartSec=3$", unit, re.M)
+    assert re.search(r"^StartLimitIntervalSec=0$", unit, re.M)
+    assert "systemctl --user stop edgeboard" in (ROOT / "README.md").read_text()
+
+
+def test_limits_show_pace_projection():
+    js = (STATIC / "app.js").read_text()
+    css = (STATIC / "style.css").read_text()
+    usage_js = js.split("// ---------- usage ----------")[1].split("// ---------- sessions ----------")[0]
+    # the server's projection (rate_per_hour / projected_full_at) becomes a third line under the bar:
+    # amber "at this pace 100% at HH:MM" before the reset, "safe until reset" otherwise, nothing when flat
+    assert "projected_full_at" in usage_js and "rate_per_hour" in usage_js
+    assert "at this pace 100% at" in usage_js and "safe until reset" in usage_js
+    assert re.search(r"^\.limit-pace\.warn\s*\{[^}]*color:\s*var\(--accent-2\)", css, re.M)
+
+
+def test_attention_alerts_flash_card_pose_mascot_and_chime():
+    js = (STATIC / "app.js").read_text()
+    css = (STATIC / "style.css").read_text()
+    sessions_js = js.split("// ---------- sessions ----------")[1].split("// ---------- spotify ----------")[0]
+    # transitions are detected per session id against the previous snapshot: working -> idle and -> attention
+    assert "prevStatus" in sessions_js and '"attention"' in sessions_js and '"working"' in sessions_js
+    # the card flashes, then stays highlighted until its status changes again
+    assert re.search(r"^\.card\.alert\s*\{[^}]*animation:\s*card-flash", css, re.M)
+    assert "@keyframes card-flash" in css
+    # the mascot takes the arms-up attention pose (pink) while any card is alerting
+    assert "ALERT" in js and re.search(r"^\.mascot\.attention rect\s*\{[^}]*var\(--pink\)", css, re.M)
+    # the chime is opt-in via the snapshot's settings.alert_sound (EDGEBOARD_ALERT_SOUND)
+    assert "alert_sound" in sessions_js and 'chime("alert")' in sessions_js
+    assert "alert:" in js.split("const CHIMES")[1].split("};")[0]

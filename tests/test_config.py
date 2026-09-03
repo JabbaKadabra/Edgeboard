@@ -65,3 +65,10 @@ def test_from_env_file_path_from_environment(tmp_path):
     f.write_text("EDGEBOARD_PORT=9003\n")
     s = Settings.from_env({"EDGEBOARD_ENV_FILE": str(f)})
     assert s.port == 9003
+
+
+def test_alert_flags_default_off():
+    s = Settings.from_env({}, env_file=NO_FILE)
+    assert s.alert_sound is False and s.alert_notify is False
+    s = Settings.from_env({"EDGEBOARD_ALERT_SOUND": "1", "EDGEBOARD_ALERT_NOTIFY": "yes"}, env_file=NO_FILE)
+    assert s.alert_sound is True and s.alert_notify is True

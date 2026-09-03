@@ -32,6 +32,8 @@ class State:
     # ``ts`` receipt time. Merged into the session cards; not part of the snapshot.
     hooks: dict[str, dict] = field(default_factory=dict)
     errors: dict[str, str | None] = field(default_factory=lambda: {"usage": None, "sessions": None, "spotify": None, "system": None})
+    # The few settings the page needs to know (set by create_app).
+    settings: dict = field(default_factory=lambda: {"alert_sound": False})
 
     def snapshot(self) -> dict:
         return {
@@ -44,4 +46,5 @@ class State:
             "spotify_queue": self.spotify_queue,
             "system": self.system,
             "errors": self.errors,
+            "settings": self.settings,
         }

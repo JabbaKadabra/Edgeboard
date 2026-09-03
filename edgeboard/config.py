@@ -56,6 +56,10 @@ class Settings:
     sessions_shown: int = 4
     usage_url: str = "https://api.anthropic.com/api/oauth/usage"
     demo: bool = False
+    # Attention alerts (see README): a chime on the panel and a desktop notification
+    # when a session switches to waiting for you or needing permission.
+    alert_sound: bool = False
+    alert_notify: bool = False
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None, env_file: Path | None = None) -> "Settings":
@@ -95,4 +99,6 @@ class Settings:
             sessions_shown=get("SESSIONS_SHOWN", defaults.sessions_shown),
             usage_url=get("USAGE_URL", defaults.usage_url),
             demo=get("DEMO", defaults.demo),
+            alert_sound=get("ALERT_SOUND", defaults.alert_sound),
+            alert_notify=get("ALERT_NOTIFY", defaults.alert_notify),
         )

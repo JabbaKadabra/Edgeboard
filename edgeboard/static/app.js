@@ -14,6 +14,17 @@
     "...XX.XX...",
   ];
   const EYES = [[3, 3], [3, 7]];
+  // arms up: shown while a session card is alerting (see renderSessions)
+  const ALERT = [
+    "..X.....X..",
+    "...X...X...",
+    "..XXXXXXX..",
+    "XXX.XXX.XXX",
+    "X.XXXXXXX.X",
+    "..XXXXXXX..",
+    "..X.....X..",
+    "...XX.XX...",
+  ];
   const COFFEE = [
     "....s.s....",
     "...s.s.....",
@@ -89,7 +100,19 @@
     });
     (eyes || []).forEach(([y, x]) => pixel(svg, x, y, "eye"));
   }
-  drawMascot($("mascot"), MASCOT, EYES);
+  // Sessions alerting right now (id -> status at the alert); the mascot raises
+  // its arms while there are any. Declared here so the pomodoro can redraw it.
+  const alerted = new Map();
+  let mascotAlerting = null;  // redraw only on change, or the blink animation restarts every second
+  function drawClaude(force) {
+    const svg = $("mascot");
+    const alerting = alerted.size > 0;
+    if (!force && alerting === mascotAlerting) return;
+    mascotAlerting = alerting;
+    drawMascot(svg, alerting ? ALERT : MASCOT, EYES);
+    svg.classList.toggle("attention", alerting);
+  }
+  drawClaude(true);
 
   // ---------- clock ----------
   function tickClock() {
@@ -119,6 +142,7 @@
     focus: [[880, 0, 0.1]],
     break: [[660, 0, 0.14], [990, 0.16, 0.24]],
     off: [[990, 0, 0.14], [784, 0.16, 0.14], [523, 0.32, 0.36]],
+    alert: [[1046, 0, 0.12], [1318, 0.15, 0.28]],  // a session needs you (EDGEBOARD_ALERT_SOUND)
   };
   let audio = null;
   function unlockAudio() {
@@ -147,8 +171,8 @@
     if (from === "off") { pomo.phase = "focus"; pomo.endsAt = Date.now() + POMO_FOCUS_MS; }
     else if (from === "focus") { pomo.phase = "break"; pomo.endsAt = Date.now() + POMO_BREAK_MS; }
     else { pomo.phase = "off"; pomo.endsAt = 0; }
-    if (pomo.phase === "break") drawMascot($("mascot"), COFFEE);
-    else if (from === "break") drawMascot($("mascot"), MASCOT, EYES);
+    if (pomo.phase === "break") { $("mascot").classList.remove("attention"); drawMascot($("mascot"), COFFEE); }
+    else if (from === "break") drawClaude(true);
     if (from !== "off") flashMascot();
     chime(pomo.phase);
     tickPomo();
@@ -188,11 +212,13 @@
       const pctClass = pct == null ? "na" : pct >= 90 ? "high" : pct >= 70 ? "mid" : "";
       const pctText = pct == null ? (w.tokens != null ? fmtTokens(w.tokens) + " tok" : "n/a") : Math.round(pct) + "%";
       const reset = w.seconds_to_reset != null ? `resets in ${fmtDuration(w.seconds_to_reset)} · ${fmtResetAt(w.resets_at)}` : "no activity in window";
+      const pace = paceLine(w);
       div.innerHTML = `
         <div class="limit-label">${escapeHtml(w.label)}</div>
         <div class="limit-pct ${pctClass}">${pctText}</div>
         <div class="bar"><div class="bar-fill ${heat(pct || 0)}" style="width:${Math.max(0, Math.min(100, pct || 0))}%"></div></div>
-        <div class="limit-reset">${reset}</div>`;
+        <div class="limit-reset">${reset}</div>
+        ${pace ? `<div class="limit-pace${pace.warn ? " warn" : ""}">${pace.text}</div>` : ""}`;
       limits.appendChild(div);
     });
 
@@ -227,6 +253,16 @@
     }
   }
 
+  // Server-side pace projection: warn when the window fills before it resets,
+  // reassure when it does not, say nothing while the pace is ~0.
+  function paceLine(w) {
+    if (!w.rate_per_hour || !w.projected_full_at) return null;
+    const full = new Date(w.projected_full_at).getTime();
+    const reset = w.resets_at ? new Date(w.resets_at).getTime() : Infinity;
+    if (full < reset) return { warn: true, text: `at this pace 100% at ${fmtResetAt(w.projected_full_at)}` };
+    return { warn: false, text: "safe until reset" };
+  }
+
   // Touch panels have no hover: tapping a bar shows its label for a few seconds.
   let peakLabel = "", tapUntil = 0;
   $("timeline").addEventListener("click", (ev) => {
@@ -245,8 +281,8 @@
       <div class="card-detail"></div>
       <div class="card-foot"><span class="tag model" hidden></span><span class="tag card-ctx"></span><span class="tag card-msgs"></span><span class="tag card-agents" hidden></span></div>`;
   const cardNodes = new Map();
-  function updateCard(el, s, now) {
-    const cls = "card " + s.status;
+  function updateCard(el, s, now, alert) {
+    const cls = "card " + s.status + (alert ? " alert" : "");
     if (el.className !== cls) el.className = cls;
     setText(el.querySelector(".pill"), s.status);
     setText(el.querySelector(".card-ago"), fmtAgo(s.last_activity, now));
@@ -269,10 +305,27 @@
     if (!s.agents) return "";
     return (s.active_agents ? `${s.active_agents}/${s.agents}` : `${s.agents}`) + (s.agents === 1 ? " agent" : " agents");
   }
+  // Attention alerts: a card that goes working -> idle (Claude finished) or -> attention
+  // (permission prompt, question) flashes and stays highlighted until its status changes
+  // again. Detected against the previous snapshot per session id; a first sighting never alerts.
+  let prevStatus = new Map();
+  function needsYou(before, status) {
+    if (before == null || before === status) return false;
+    return status === "attention" || (status === "idle" && before === "working");
+  }
   let lastSessions = [];
-  function renderSessions(sessions, summary, now) {
+  function renderSessions(sessions, summary, now, settings) {
     const box = $("sessions");
     lastSessions = sessions;
+    let fresh = 0;
+    sessions.forEach((s) => {
+      if (needsYou(prevStatus.get(s.id), s.status)) { alerted.set(s.id, s.status); fresh++; }
+      else if (alerted.get(s.id) !== s.status) alerted.delete(s.id);
+    });
+    prevStatus = new Map(sessions.map((s) => [s.id, s.status]));
+    for (const id of [...alerted.keys()]) { if (!prevStatus.has(id)) alerted.delete(id); }
+    if (pomo.phase !== "break") drawClaude();
+    if (fresh && settings.alert_sound) { unlockAudio(); chime("alert"); }
     const parts = [`${summary.today || 0} today`, `${summary.done || 0} done`, `${summary.working || 0} working`];
     if (summary.attention) parts.push(`${summary.attention} need you`);
     text("sessions-summary", parts.join(" · "));
@@ -288,7 +341,7 @@
         el.innerHTML = CARD_HTML;
         cardNodes.set(s.id, el);
       }
-      updateCard(el, s, now);
+      updateCard(el, s, now, alerted.has(s.id));
       const want = prev ? prev.nextElementSibling : box.firstElementChild;
       if (want !== el) box.insertBefore(el, want);  // only moves nodes that are out of order
       prev = el;
@@ -556,7 +609,7 @@
     const errors = snap.errors || {};
     try { renderErrors(errors); } catch (e) { console.error("errors", e); }
     try { renderUsage(snap.usage || {}, errors); } catch (e) { console.error("usage", e); }
-    try { renderSessions(snap.sessions || [], snap.sessions_summary || {}, now); } catch (e) { console.error("sessions", e); }
+    try { renderSessions(snap.sessions || [], snap.sessions_summary || {}, now, snap.settings || {}); } catch (e) { console.error("sessions", e); }
     try { renderSpotify(snap.spotify || {}, errors); } catch (e) { console.error("spotify", e); }
     try { renderQueue(snap.spotify_queue, snap.spotify || {}, errors); } catch (e) { console.error("queue", e); }
     try { renderSystem(snap.system, errors); } catch (e) { console.error("system", e); }

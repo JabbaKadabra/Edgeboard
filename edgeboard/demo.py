@@ -21,8 +21,9 @@ def fill_demo(state: State) -> None:
         "source": "demo",
         "stale": False,
         "windows": [
-            {"key": "five_hour", "label": "5-hour", "utilization": 6, "resets_at": (now + timedelta(hours=4, minutes=10)).isoformat(), "seconds_to_reset": 4 * 3600 + 600, "tokens": None},
-            {"key": "seven_day", "label": "Weekly", "utilization": 2, "resets_at": (now + timedelta(days=5, hours=22)).isoformat(), "seconds_to_reset": 5 * 86400 + 22 * 3600, "tokens": None},
+            # 5-hour: filling faster than it resets (warning line); weekly: comfortably safe
+            {"key": "five_hour", "label": "5-hour", "utilization": 6, "resets_at": (now + timedelta(hours=4, minutes=10)).isoformat(), "seconds_to_reset": 4 * 3600 + 600, "tokens": None, "rate_per_hour": 30.0, "projected_full_at": (now + timedelta(hours=94 / 30)).isoformat()},
+            {"key": "seven_day", "label": "Weekly", "utilization": 2, "resets_at": (now + timedelta(days=5, hours=22)).isoformat(), "seconds_to_reset": 5 * 86400 + 22 * 3600, "tokens": None, "rate_per_hour": 0.4, "projected_full_at": (now + timedelta(hours=98 / 0.4)).isoformat()},
         ],
         "today": {"output": 370_000, "input": 558, "cache_read": 113_300_000, "cache_write": 2_900_000, "messages": 279},
         "timeline": timeline,

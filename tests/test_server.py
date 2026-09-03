@@ -47,6 +47,7 @@ def test_demo_mode_serves_canned_data():
     assert len(data["sessions"]) == 4
     assert data["sessions_summary"]["today"] > 4
     assert [w["key"] for w in data["usage"]["windows"]] == ["five_hour", "seven_day"]
+    assert all(w["projected_full_at"] and w["rate_per_hour"] for w in data["usage"]["windows"])
     assert data["spotify_queue"]["configured"] and len(data["spotify_queue"]["tracks"]) == 6
     assert data["system"]["cpu"]["percent"] == 6.0
     r = client.post("/api/spotify/play_pause").json()
@@ -325,3 +326,58 @@ def test_sessions_collector_passes_hooks_and_prunes_expired(monkeypatch, tmp_pat
     c = Collectors(Settings(claude_dir=tmp_path), state, lambda a: (0, ""))
     asyncio.run(c._sessions())
     assert set(seen["hooks"]) == {"fresh"} and set(state.hooks) == {"fresh"}
+
+
+def test_state_exposes_alert_settings():
+    client, _ = make_client(alert_sound=True)
+    assert client.get("/api/state").json()["settings"] == {"alert_sound": True}
+    client, _ = make_client()
+    assert client.get("/api/state").json()["settings"] == {"alert_sound": False}
+
+
+def test_sessions_loop_notifies_on_attention_transitions(monkeypatch):
+    import asyncio
+
+    from edgeboard import server
+    from edgeboard.server import Collectors
+
+    rounds = [
+        ([{"id": "a", "status": "working", "name": "Fix tests", "detail": "running pytest"}], {}),
+        ([{"id": "a", "status": "idle", "name": "Fix tests", "detail": "waiting for you"}], {}),
+        ([{"id": "a", "status": "idle", "name": "Fix tests", "detail": "waiting for you"}], {}),
+        ([{"id": "a", "status": "attention", "name": "Fix tests", "detail": "needs permission"}], {}),
+    ]
+
+    class FakeSession(dict):
+        def to_dict(self):
+            return dict(self)
+
+    def fake_collect(settings, now, pid_alive, hooks):
+        sessions, summary = rounds.pop(0)
+        return [FakeSession(s) for s in sessions], summary
+
+    monkeypatch.setattr(server, "collect_sessions", fake_collect)
+    sent = []
+    collectors = Collectors(Settings(alert_notify=True), State(), spotify_runner=lambda args: (0, ""), notifier=lambda title, body: sent.append((title, body)))
+
+    async def run():
+        for _ in range(4):
+            await collectors._sessions()
+
+    asyncio.run(run())
+    assert sent == [("Claude is waiting for you", "Fix tests: waiting for you"), ("Claude needs you", "Fix tests: needs permission")]
+
+    # off by default: the same transitions send nothing
+    rounds.extend([
+        ([{"id": "b", "status": "working", "name": "x", "detail": ""}], {}),
+        ([{"id": "b", "status": "attention", "name": "x", "detail": "needs permission"}], {}),
+    ])
+    quiet = []
+    collectors = Collectors(Settings(), State(), spotify_runner=lambda args: (0, ""), notifier=lambda t, b: quiet.append(t))
+
+    async def run_twice():
+        await collectors._sessions()
+        await collectors._sessions()
+
+    asyncio.run(run_twice())
+    assert quiet == []

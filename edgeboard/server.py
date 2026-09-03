@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
+import subprocess
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -18,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from edgeboard.collectors import claude_usage, spotify, spotify_queue
-from edgeboard.collectors.claude_sessions import collect_sessions, os_pid_alive, prune_hooks
+from edgeboard.collectors.claude_sessions import ATTENTION, attention_transitions, collect_sessions, os_pid_alive, prune_hooks
 from edgeboard.collectors.system import SystemSampler
 from edgeboard.config import Settings
 from edgeboard.demo import fill_demo
@@ -46,13 +48,25 @@ USAGE_STALE_AFTER = 15 * 60
 USAGE_BACKOFF_MAX = 10 * 60
 
 
+Notifier = Callable[[str, str], None]
+
+
+def desktop_notify(title: str, body: str) -> None:
+    """Show a desktop notification on the main monitor via ``notify-send`` (no-op without it)."""
+    if not shutil.which("notify-send"):
+        return
+    subprocess.run(["notify-send", "-a", "edgeboard", "-u", "normal", title, body], check=False, timeout=5)
+
+
 class Collectors:
     """Background loops that keep ``State`` fresh. One task per source."""
 
-    def __init__(self, settings: Settings, state: State, spotify_runner: spotify.Runner):
+    def __init__(self, settings: Settings, state: State, spotify_runner: spotify.Runner, notifier: Notifier = desktop_notify):
         self.settings = settings
         self.state = state
         self.spotify_runner = spotify_runner
+        self.notifier = notifier
+        self._statuses: dict[str, str] = {}  # session id -> status of the previous round, for attention alerts
         self.sampler: SystemSampler | None = None
         self._tasks: list[asyncio.Task] = []
         self._last_error: dict[str, str | None] = {}
@@ -61,6 +75,7 @@ class Collectors:
         self._token_checked = 0.0
         self._usage_ok_at = 0.0  # loop time of the last successful usage poll
         self._usage_rate_limited = 0  # consecutive 429s, drives the backoff
+        self._usage_samples: dict[str, list[claude_usage.Sample]] = {}  # per window key, for the pace projection
         self._queue_client = spotify_queue.QueueClient(settings.spotify_token_file)
 
     async def start(self) -> None:
@@ -156,6 +171,13 @@ class Collectors:
         sessions, summary = await self._run(collect_sessions, self.settings, None, os_pid_alive, dict(self.state.hooks))
         self.state.sessions = [s.to_dict() for s in sessions]
         self.state.sessions_summary = summary
+        # Attention alerts: the page flashes the card itself; the desktop notification is opt-in.
+        alerts = attention_transitions(self._statuses, self.state.sessions)
+        self._statuses = {s["id"]: s["status"] for s in self.state.sessions}
+        if self.settings.alert_notify:
+            for s in alerts:
+                title = "Claude needs you" if s["status"] == ATTENTION else "Claude is waiting for you"
+                await self._run(self.notifier, title, f"{s.get('name') or s['id']}: {s.get('detail') or ''}".rstrip(": "))
 
     async def _timeline(self) -> None:
         now = datetime.now(timezone.utc)
@@ -200,7 +222,9 @@ class Collectors:
             raise
         self._usage_ok_at = loop_time
         self._usage_rate_limited = 0
-        usage["windows"] = [w.to_dict() for w in claude_usage.parse_usage_response(data, now)]
+        windows = claude_usage.parse_usage_response(data, now)
+        claude_usage.project_windows(windows, self._usage_samples, now)
+        usage["windows"] = [w.to_dict() for w in windows]
         usage["source"] = "api"
         usage["stale"] = False
         usage["updated_at"] = now.isoformat()
@@ -264,6 +288,7 @@ def create_app(
     app = FastAPI(title="edgeboard", lifespan=lifespan)
     app.state.settings = settings
     app.state.dashboard = state
+    state.settings = {"alert_sound": settings.alert_sound}
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/")

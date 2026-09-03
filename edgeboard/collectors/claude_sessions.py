@@ -7,7 +7,7 @@ import os
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 from edgeboard.collectors.claude_transcripts import SessionFacts, SessionParser, iter_entries, read_transcript_bytes, short_model, tool_hint
 from edgeboard.config import Settings
@@ -130,6 +130,23 @@ def apply_hook(current: tuple[str, str], facts: SessionFacts, hook: dict | None,
     if facts.last_ts is not None and facts.last_ts.timestamp() > ts:
         return current
     return hook_override(hook) or current
+
+
+def attention_transitions(previous: dict[str, str], sessions: Iterable[dict]) -> list[dict]:
+    """Sessions that just started needing the user, given the statuses of the previous round.
+
+    Alerts on ``working -> idle`` (Claude finished its turn) and on anything
+    ``-> attention`` (permission prompt or question). A session seen for the
+    first time never alerts, nor does one that merely stays where it was.
+    """
+    alerts = []
+    for s in sessions:
+        before, now = previous.get(s["id"]), s["status"]
+        if before is None or before == now:
+            continue
+        if now == ATTENTION or (now == IDLE and before == WORKING):
+            alerts.append(s)
+    return alerts
 
 
 def prune_hooks(hooks: dict[str, dict], now: float) -> dict[str, dict]:
