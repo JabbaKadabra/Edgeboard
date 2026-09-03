@@ -84,6 +84,12 @@ body.debug { cursor: default; }
 .chip.ok .dot { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
 .chip.warn .dot { background: var(--working); }
 .chip.bad .dot { background: var(--bad); }
+.err-line {
+  margin-top: 6px; padding: 0 8px; width: 100%; text-align: center;
+  font-size: 11px; line-height: 1.3; color: var(--bad);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.err-line[hidden] { display: none; }
 
 /* ---------- column 2 ---------- */
 .limits { display: flex; flex-direction: column; gap: 10px; }
@@ -105,7 +111,7 @@ body.debug { cursor: default; }
 .stat span { font-size: 11px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); }
 .timeline-head { display: flex; justify-content: space-between; font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin-top: 6px; }
 .timeline { display: flex; align-items: flex-end; gap: 3px; flex: 1; min-height: 74px; margin-top: 6px; }
-.timeline .tb { flex: 1; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 2px; opacity: .85; }
+.timeline .tb { flex: 1; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 2px; opacity: .85; cursor: pointer; }
 .timeline .tb.now { background: var(--accent-2); opacity: 1; }
 .timeline .tb.empty { background: var(--border); }
 .timeline-labels { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-top: 3px; }
@@ -187,11 +193,16 @@ body.debug { cursor: default; }
 .spark .cpu { stroke: var(--accent); }
 .spark .gpu { stroke: var(--gpu); }
 .spark .fill { fill: rgba(255,159,28,.12); stroke: none; }
+.spark .rx { stroke: var(--ok); }
+.spark .tx { stroke: var(--accent-2); }
+.spark .fill-rx { fill: rgba(74,222,128,.12); stroke: none; }
 .spark-legend { display: flex; gap: 14px; font-size: 11px; color: var(--muted); }
 .spark-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .sw { width: 12px; height: 3px; display: inline-block; }
 .sw-cpu { background: var(--accent); }
 .sw-gpu { background: var(--gpu); }
+.sw-rx { background: var(--ok); }
+.sw-tx { background: var(--accent-2); }
 
 .badge-disconnected {
   position: fixed; top: 10px; right: 14px; z-index: 10;

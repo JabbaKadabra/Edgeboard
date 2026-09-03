@@ -33,7 +33,8 @@ XDASH_DEMO=1 .venv/bin/python -m xdash   # canned data, no Claude/Spotify needed
 ```
 
 Open the URL in any browser to check it. Append `?debug` to the URL to get the
-mouse cursor back (the kiosk hides it).
+mouse cursor back (the kiosk hides it). Collector errors appear in red under
+the status chips; tap a bar of the 24 h chart to read its value.
 
 ## Run on the Xeneon Edge
 
@@ -68,7 +69,7 @@ If the browser never appears, check `journalctl --user -u xdash-kiosk`.
 |----------|----------------------------------------------------------------------------------------------------------|
 | Limits   | Claude's OAuth usage endpoint, using the token in `~/.claude/.credentials.json` (same as `/usage` in Claude Code). Without a token the panel falls back to token counts from local transcripts and is labelled "estimated". |
 | Today / timeline | `~/.claude/projects/*/*.jsonl` transcript files.                                                  |
-| Sessions | `~/.claude/sessions/*.json` (live processes) plus transcripts modified today.                            |
+| Sessions | `~/.claude/sessions/*.json` (live processes, checked against `/proc/<pid>/cmdline`) plus transcripts modified today. A transcript without a process (`claude -p`, remote sessions) counts as working while it was written in the last 60 s and Claude is mid-turn. |
 | Spotify  | `playerctl -p spotify` (MPRIS over D-Bus). Set `XDASH_SPOTIFY_PLAYER` for another player name. Spotify's MPRIS position is only refreshed on play/pause/seek, so the progress bar is interpolated client-side and can drift by a few seconds. |
 | System   | `psutil`, `/sys/class/hwmon`, `nvidia-smi` or `/sys/class/drm/card*/device` for AMD.                     |
 

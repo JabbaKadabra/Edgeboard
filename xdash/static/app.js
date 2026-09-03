@@ -57,7 +57,8 @@
     if (sameDay) return time;
     return d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) + " " + time;
   }
-  function text(id, value) { const el = $(id); if (el && el.textContent !== String(value)) el.textContent = value; }
+  function setText(el, value) { if (el && el.textContent !== String(value)) el.textContent = String(value); }
+  function text(id, value) { setText($(id), value); }
   function heat(pct) { return pct >= 90 ? "hot" : pct >= 70 ? "warm" : ""; }
   function setBar(id, pct) {
     const el = $(id);
@@ -148,9 +149,11 @@
       const h = Math.max(2, Math.round((b.tokens / peak) * 100));
       el.style.height = h + "%";
       el.className = "tb" + (i === tl.length - 1 ? " now" : "") + (b.tokens === 0 ? " empty" : "");
-      el.title = `${new Date(b.hour_start).toLocaleTimeString([], { hour: "2-digit" })}: ${fmtTokens(b.tokens)}`;
+      el.dataset.label = `${new Date(b.hour_start).toLocaleTimeString([], { hour: "2-digit" })} · ${fmtTokens(b.tokens)}`;
+      el.title = el.dataset.label;
     });
-    text("timeline-peak", tl.length ? `peak ${fmtTokens(usage.peak)}` : "");
+    peakLabel = tl.length ? `peak ${fmtTokens(usage.peak)}` : "";
+    if (Date.now() > tapUntil) text("timeline-peak", peakLabel);
     const labels = $("timeline-labels");
     if (tl.length && labels.childElementCount === 0) {
       labels.innerHTML = [0, 6, 12, 18, 23].map((i) => `<span>${new Date(tl[i].hour_start).toLocaleTimeString([], { hour: "2-digit" })}</span>`).join("");
@@ -159,23 +162,63 @@
     }
   }
 
+  // Touch panels have no hover: tapping a bar shows its label for a few seconds.
+  let peakLabel = "", tapUntil = 0;
+  $("timeline").addEventListener("click", (ev) => {
+    const bar = ev.target.closest(".tb");
+    if (!bar) return;
+    tapUntil = Date.now() + 4000;
+    text("timeline-peak", bar.dataset.label || "");
+    setTimeout(() => { if (Date.now() >= tapUntil) text("timeline-peak", peakLabel); }, 4100);
+  });
+
   // ---------- sessions ----------
+  const CARD_HTML = `
+      <div class="card-top"><span class="pill"></span><span class="muted card-ago"></span></div>
+      <div class="card-title"></div>
+      <div class="card-proj"><b></b><span class="card-branch"></span></div>
+      <div class="card-detail"></div>
+      <div class="card-foot"><span class="tag model" hidden></span><span class="tag card-ctx"></span><span class="tag card-msgs"></span></div>`;
+  const cardNodes = new Map();
+  function updateCard(el, s, now) {
+    const cls = "card " + s.status;
+    if (el.className !== cls) el.className = cls;
+    setText(el.querySelector(".pill"), s.status);
+    setText(el.querySelector(".card-ago"), fmtAgo(s.last_activity, now));
+    setText(el.querySelector(".card-title"), s.name);
+    setText(el.querySelector(".card-proj b"), s.project);
+    setText(el.querySelector(".card-branch"), s.branch ? "@" + s.branch : "");
+    setText(el.querySelector(".card-detail"), s.detail);
+    const model = el.querySelector(".tag.model");
+    setText(model, s.model || "");
+    model.hidden = !s.model;
+    setText(el.querySelector(".card-ctx"), "ctx " + fmtTokens(s.context_tokens));
+    setText(el.querySelector(".card-msgs"), `${s.messages} msgs`);
+  }
   function renderSessions(sessions, summary, now) {
     const box = $("sessions");
-    const empty = $("sessions-empty");
     text("sessions-summary", `${summary.today || 0} today · ${summary.done || 0} done · ${summary.working || 0} working`);
-    empty.hidden = sessions.length > 0;
-    const html = sessions.map((s) => `
-      <div class="card ${s.status}" data-id="${s.id}">
-        <div class="card-top"><span class="pill">${s.status}</span><span class="muted">${fmtAgo(s.last_activity, now)}</span></div>
-        <div class="card-title">${escapeHtml(s.name)}</div>
-        <div class="card-proj"><b>${escapeHtml(s.project)}</b>${s.branch ? "@" + escapeHtml(s.branch) : ""}</div>
-        <div class="card-detail">${escapeHtml(s.detail)}</div>
-        <div class="card-foot">${s.model ? `<span class="tag model">${escapeHtml(s.model)}</span>` : ""}<span class="tag">ctx ${fmtTokens(s.context_tokens)}</span><span class="tag">${s.messages} msgs</span></div>
-      </div>`).join("");
-    if (box.dataset.html !== html) { box.innerHTML = html; box.dataset.html = html; }
-    const mascot = $("mascot");
-    mascot.classList.toggle("working", (summary.working || 0) > 0);
+    $("sessions-empty").hidden = sessions.length > 0;
+    const seen = new Set();
+    let prev = null;
+    sessions.forEach((s) => {
+      seen.add(s.id);
+      let el = cardNodes.get(s.id);
+      if (!el) {
+        el = document.createElement("div");
+        el.dataset.id = s.id;
+        el.innerHTML = CARD_HTML;
+        cardNodes.set(s.id, el);
+      }
+      updateCard(el, s, now);
+      const want = prev ? prev.nextElementSibling : box.firstElementChild;
+      if (want !== el) box.insertBefore(el, want);  // only moves nodes that are out of order
+      prev = el;
+    });
+    for (const [id, el] of cardNodes) {
+      if (!seen.has(id)) { el.remove(); cardNodes.delete(id); }
+    }
+    $("mascot").classList.toggle("working", (summary.working || 0) > 0);
   }
   function escapeHtml(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -266,28 +309,38 @@
       `↓ <b>${fmtBytes(net.rx_bps)}/s</b>`,
     ].filter(Boolean).map((s) => `<span>${s}</span>`).join("");
   }
+  const SPARK_W = 120, SPARK_H = 40;
+  function sparkPoints(arr, max) {
+    const n = arr.length;
+    return arr.map((v, i) => `${(i / (n - 1)) * SPARK_W},${SPARK_H - (Math.max(0, Math.min(max, v)) / max) * SPARK_H}`).join(" ");
+  }
+  function sparkLine(arr, cls, max) {
+    return arr && arr.length > 1 ? `<polyline class="${cls}" points="${sparkPoints(arr, max)}"/>` : "";
+  }
+  function sparkArea(arr, cls, max) {
+    return arr && arr.length > 1 ? `<polygon class="${cls}" points="0,${SPARK_H} ${sparkPoints(arr, max)} ${SPARK_W},${SPARK_H}"/>` : "";
+  }
   function drawSpark(hist) {
-    const svg = $("spark-cpu");
-    const W = 120, H = 40;
-    const line = (arr, cls) => {
-      if (!arr || arr.length < 2) return "";
-      const n = arr.length;
-      const pts = arr.map((v, i) => `${(i / (n - 1)) * W},${H - (Math.max(0, Math.min(100, v)) / 100) * H}`).join(" ");
-      return `<polyline class="${cls}" points="${pts}"/>`;
-    };
-    const area = (arr) => {
-      if (!arr || arr.length < 2) return "";
-      const n = arr.length;
-      const pts = arr.map((v, i) => `${(i / (n - 1)) * W},${H - (Math.max(0, Math.min(100, v)) / 100) * H}`).join(" ");
-      return `<polygon class="fill" points="0,${H} ${pts} ${W},${H}"/>`;
-    };
-    svg.innerHTML = area(hist.cpu) + line(hist.gpu, "gpu") + line(hist.cpu, "cpu");
+    $("spark-cpu").innerHTML = sparkArea(hist.cpu, "fill", 100) + sparkLine(hist.gpu, "gpu", 100) + sparkLine(hist.cpu, "cpu", 100);
+    const rx = hist.rx || [], tx = hist.tx || [];
+    let max = 1;
+    for (const v of rx) if (v > max) max = v;
+    for (const v of tx) if (v > max) max = v;
+    $("spark-net").innerHTML = sparkArea(rx, "fill-rx", max) + sparkLine(rx, "rx", max) + sparkLine(tx, "tx", max);
+    text("net-peak", rx.length ? `peak ${fmtBytes(max)}/s` : "");
   }
 
   // ---------- render root ----------
+  function renderErrors(errors) {
+    const msgs = Object.entries(errors).filter(([, v]) => v).map(([k, v]) => `${k}: ${String(v).slice(0, 90)}`);
+    const el = $("err-line");
+    el.hidden = msgs.length === 0;
+    setText(el, msgs.join("  ·  "));
+  }
   function render(snap) {
     const now = Date.now();
     const errors = snap.errors || {};
+    try { renderErrors(errors); } catch (e) { console.error("errors", e); }
     try { renderUsage(snap.usage || {}, errors); } catch (e) { console.error("usage", e); }
     try { renderSessions(snap.sessions || [], snap.sessions_summary || {}, now); } catch (e) { console.error("sessions", e); }
     try { renderSpotify(snap.spotify || {}, errors); } catch (e) { console.error("spotify", e); }

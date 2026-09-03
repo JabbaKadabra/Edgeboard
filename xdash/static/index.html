@@ -29,6 +29,7 @@
       <span class="chip" id="chip-spotify"><i class="dot"></i>spotify</span>
       <span class="chip" id="chip-sys"><i class="dot"></i>sensors</span>
     </div>
+    <div id="err-line" class="err-line" hidden></div>
   </section>
 
   <!-- column 2: limits, today, timeline -->
@@ -96,6 +97,8 @@
       <div class="net"><span class="meter-label">NET</span><span id="v-net" class="net-val">–</span></div>
       <svg id="spark-cpu" class="spark" viewBox="0 0 120 40" preserveAspectRatio="none"></svg>
       <div class="spark-legend"><span><i class="sw sw-cpu"></i>cpu</span><span><i class="sw sw-gpu"></i>gpu</span><span id="sys-load" class="muted"></span></div>
+      <svg id="spark-net" class="spark" viewBox="0 0 120 40" preserveAspectRatio="none"></svg>
+      <div class="spark-legend"><span><i class="sw sw-rx"></i>down</span><span><i class="sw sw-tx"></i>up</span><span id="net-peak" class="muted"></span></div>
     </div>
   </section>
 </main>
