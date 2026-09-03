@@ -14,6 +14,16 @@
     "...XX.XX...",
   ];
   const EYES = [[3, 3], [3, 7]];
+  const COFFEE = [
+    "....s.s....",
+    "...s.s.....",
+    "...........",
+    ".XXXXXXX...",
+    ".XXXXXXXXX.",
+    ".XXXXXXXX.X",
+    "..XXXXXXXX.",
+    "...XXXXX...",
+  ];
 
   // ---------- helpers ----------
   function fmtTokens(n) {
@@ -62,24 +72,24 @@
   function heat(pct) { return pct >= 90 ? "hot" : pct >= 70 ? "warm" : ""; }
 
   // ---------- mascot ----------
-  function drawMascot(svg) {
+  function pixel(svg, x, y, cls) {
+    const r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    r.setAttribute("x", x); r.setAttribute("y", y); r.setAttribute("width", 1); r.setAttribute("height", 1);
+    if (cls) r.setAttribute("class", cls);
+    svg.appendChild(r);
+  }
+  // grid: "X" = body pixel, "s" = steam pixel; eyes are drawn on top in the background colour
+  function drawMascot(svg, grid, eyes) {
     svg.innerHTML = "";
-    MASCOT.forEach((row, y) => {
+    grid.forEach((row, y) => {
       [...row].forEach((ch, x) => {
-        if (ch !== "X") return;
-        const r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-        r.setAttribute("x", x); r.setAttribute("y", y); r.setAttribute("width", 1); r.setAttribute("height", 1);
-        svg.appendChild(r);
+        if (ch === "X") pixel(svg, x, y);
+        else if (ch === "s") pixel(svg, x, y, "steam");
       });
     });
-    EYES.forEach(([y, x]) => {
-      const r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-      r.setAttribute("x", x); r.setAttribute("y", y); r.setAttribute("width", 1); r.setAttribute("height", 1);
-      r.setAttribute("class", "eye");
-      svg.appendChild(r);
-    });
+    (eyes || []).forEach(([y, x]) => pixel(svg, x, y, "eye"));
   }
-  drawMascot($("mascot"));
+  drawMascot($("mascot"), MASCOT, EYES);
 
   // ---------- clock ----------
   function tickClock() {
@@ -89,8 +99,76 @@
     text("clock-s", String(d.getSeconds()).padStart(2, "0"));
     text("clock-date", d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) + (/[AP]M/i.test(d.toLocaleTimeString()) ? (d.getHours() < 12 ? " AM" : " PM") : ""));
   }
+
+  // ---------- pomodoro ----------
+  // Tapping the mascot runs one loop: off -> focus (25 min) -> break (5 min, coffee cup) -> off.
+  // A tap advances early; reaching zero advances automatically. End times are wall-clock so a stalled tab stays right.
+  const POMO_FOCUS_MS = 25 * 60 * 1000;
+  const POMO_BREAK_MS = 5 * 60 * 1000;
+  const pomo = { phase: "off", endsAt: 0 };
+  function flashMascot() {
+    const svg = $("mascot");
+    svg.classList.remove("flash");
+    void svg.getBoundingClientRect();  // restart the animation if it is still running
+    svg.classList.add("flash");
+  }
+  // Synthesized WebAudio chimes, one per phase entered: a blip to start, two rising notes for the
+  // break, three falling notes when the loop is done. The context is created on the first tap (a
+  // user gesture) so the automatic transitions at zero can sound; kiosk.sh also lifts the autoplay policy.
+  const CHIMES = {
+    focus: [[880, 0, 0.1]],
+    break: [[660, 0, 0.14], [990, 0.16, 0.24]],
+    off: [[990, 0, 0.14], [784, 0.16, 0.14], [523, 0.32, 0.36]],
+  };
+  let audio = null;
+  function unlockAudio() {
+    if (audio) return;
+    try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { audio = null; }
+  }
+  function chime(phase) {
+    if (!audio) return;
+    const play = () => {
+      const t0 = audio.currentTime + 0.02;
+      (CHIMES[phase] || []).forEach(([freq, at, dur]) => {
+        const osc = audio.createOscillator(), gain = audio.createGain();
+        osc.type = "triangle"; osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, t0 + at);
+        gain.gain.linearRampToValueAtTime(0.25, t0 + at + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + at + dur);
+        osc.connect(gain).connect(audio.destination);
+        osc.start(t0 + at); osc.stop(t0 + at + dur + 0.05);
+      });
+    };
+    if (audio.state === "running") play();
+    else audio.resume().then(play).catch(() => {});
+  }
+  function advancePomo() {
+    const from = pomo.phase;
+    if (from === "off") { pomo.phase = "focus"; pomo.endsAt = Date.now() + POMO_FOCUS_MS; }
+    else if (from === "focus") { pomo.phase = "break"; pomo.endsAt = Date.now() + POMO_BREAK_MS; }
+    else { pomo.phase = "off"; pomo.endsAt = 0; }
+    if (pomo.phase === "break") drawMascot($("mascot"), COFFEE);
+    else if (from === "break") drawMascot($("mascot"), MASCOT, EYES);
+    if (from !== "off") flashMascot();
+    chime(pomo.phase);
+    tickPomo();
+  }
+  function tickPomo() {
+    const el = $("pomo");
+    if (pomo.phase === "off") { el.hidden = true; return; }
+    const remaining = pomo.endsAt - Date.now();
+    if (remaining <= 0) { advancePomo(); return; }
+    text("pomo-label", pomo.phase);
+    text("pomo-time", fmtClockSecs(Math.ceil(remaining / 1000)));
+    el.classList.toggle("break", pomo.phase === "break");
+    el.hidden = false;
+  }
+  $("mascot-wrap").addEventListener("click", () => { unlockAudio(); advancePomo(); });
+  $("mascot").addEventListener("animationend", (ev) => { if (ev.animationName === "flash") ev.target.classList.remove("flash"); });
+
   tickClock();
-  setInterval(tickClock, 1000);
+  tickPomo();
+  setInterval(() => { tickClock(); tickPomo(); }, 1000);
 
   // ---------- usage ----------
   function renderUsage(usage, errors) {
@@ -165,7 +243,7 @@
       <div class="card-title"></div>
       <div class="card-proj"><b></b><span class="card-branch"></span></div>
       <div class="card-detail"></div>
-      <div class="card-foot"><span class="tag model" hidden></span><span class="tag card-ctx"></span><span class="tag card-msgs"></span></div>`;
+      <div class="card-foot"><span class="tag model" hidden></span><span class="tag card-ctx"></span><span class="tag card-msgs"></span><span class="tag card-agents" hidden></span></div>`;
   const cardNodes = new Map();
   function updateCard(el, s, now) {
     const cls = "card " + s.status;
@@ -181,10 +259,23 @@
     model.hidden = !s.model;
     setText(el.querySelector(".card-ctx"), "ctx " + fmtTokens(s.context_tokens));
     setText(el.querySelector(".card-msgs"), `${s.messages} msgs`);
+    const agents = el.querySelector(".card-agents");
+    agents.hidden = !s.agents;
+    setText(agents, agentsLabel(s));
+    agents.classList.toggle("active", (s.active_agents || 0) > 0);
   }
+  // "2/3 agents" while some subagents are still writing, "3 agents" once they are quiet
+  function agentsLabel(s) {
+    if (!s.agents) return "";
+    return (s.active_agents ? `${s.active_agents}/${s.agents}` : `${s.agents}`) + (s.agents === 1 ? " agent" : " agents");
+  }
+  let lastSessions = [];
   function renderSessions(sessions, summary, now) {
     const box = $("sessions");
-    text("sessions-summary", `${summary.today || 0} today · ${summary.done || 0} done · ${summary.working || 0} working`);
+    lastSessions = sessions;
+    const parts = [`${summary.today || 0} today`, `${summary.done || 0} done`, `${summary.working || 0} working`];
+    if (summary.attention) parts.push(`${summary.attention} need you`);
+    text("sessions-summary", parts.join(" · "));
     $("sessions-empty").hidden = sessions.length > 0;
     const seen = new Set();
     let prev = null;
@@ -205,8 +296,56 @@
     for (const [id, el] of cardNodes) {
       if (!seen.has(id)) { el.remove(); cardNodes.delete(id); }
     }
-    $("mascot").classList.toggle("working", (summary.working || 0) > 0);
+    renderOverlay(sessions, now);
   }
+
+  // Tapping a card opens a full-height overlay with everything the card truncates.
+  // It stays live (refilled from each snapshot) and closes on a backdrop tap,
+  // after 20 s, or when the session leaves the snapshot.
+  const OVERLAY_MS = 20 * 1000;
+  let overlayId = null, overlayTimer = 0;
+  function openOverlay(id) {
+    overlayId = id;
+    clearTimeout(overlayTimer);
+    overlayTimer = setTimeout(closeOverlay, OVERLAY_MS);
+    renderOverlay(lastSessions, Date.now());
+  }
+  function closeOverlay() {
+    overlayId = null;
+    clearTimeout(overlayTimer);
+    $("overlay").hidden = true;
+  }
+  function fmtTime(iso) {
+    return iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+  }
+  function renderOverlay(sessions, now) {
+    if (overlayId == null) return;
+    const s = sessions.find((x) => x.id === overlayId);
+    if (!s) { closeOverlay(); return; }
+    const card = $("overlay-card");
+    const cls = "overlay-card " + s.status;
+    if (card.className !== cls) card.className = cls;
+    text("ov-pill", s.status);
+    text("ov-detail", s.detail || "");
+    text("ov-ago", fmtAgo(s.last_activity, now) + " ago");
+    text("ov-title", s.name || "");
+    text("ov-cwd", s.cwd || "");
+    text("ov-branch", s.branch || "–");
+    text("ov-model", s.model || "–");
+    const started = s.started_at ? new Date(s.started_at).getTime() : 0;
+    text("ov-started", started ? `${fmtTime(s.started_at)} · running ${fmtDuration((now - started) / 1000)}` : "–");
+    text("ov-activity", s.last_activity ? `${fmtTime(s.last_activity)} · ${fmtAgo(s.last_activity, now)} ago` : "–");
+    text("ov-msgs", s.messages || 0);
+    text("ov-ctx", fmtTokens(s.context_tokens) + " tokens");
+    text("ov-agents", agentsLabel(s) || "none");
+    text("ov-prompt", s.last_prompt || "–");
+    $("overlay").hidden = false;
+  }
+  $("sessions").addEventListener("click", (ev) => {
+    const card = ev.target.closest(".card");
+    if (card) openOverlay(card.dataset.id);
+  });
+  $("overlay").addEventListener("click", (ev) => { if (ev.target === ev.currentTarget) closeOverlay(); });
   function escapeHtml(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }

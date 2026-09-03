@@ -9,15 +9,31 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from edgeboard.collectors.claude_transcripts import SessionFacts, SessionParser, iter_entries, read_transcript_bytes, short_model
+from edgeboard.collectors.claude_transcripts import SessionFacts, SessionParser, iter_entries, read_transcript_bytes, short_model, tool_hint
 from edgeboard.config import Settings
 
+ATTENTION = "attention"  # Claude is blocked on the user: a permission prompt or a question
 WORKING = "working"
 IDLE = "idle"
 DONE = "done"
 # A transcript without a pid file (``claude -p``, remote sessions) counts as
 # running while it was written this recently and its tail says Claude is busy.
+# The same window decides whether a subagent transcript counts as active.
 HEADLESS_ACTIVE_SECS = 60.0
+# A hook event (POST /api/hook) older than this no longer overrides the
+# transcript, so a missed Stop cannot pin a card.
+HOOK_TTL = 10 * 60.0
+_TOOL_VERBS = {
+    "Bash": "running",
+    "Read": "reading",
+    "Edit": "editing",
+    "Write": "writing",
+    "NotebookEdit": "editing",
+    "Grep": "searching",
+    "Glob": "searching",
+    "Agent": "agent:",
+    "Task": "agent:",
+}
 
 
 @dataclass
@@ -34,12 +50,24 @@ class Session:
     started_at: str | None
     last_activity: str | None
     messages: int
+    agents: int = 0  # subagent transcripts under <project>/<session>/subagents/
+    active_agents: int = 0  # of those, written in the last HEADLESS_ACTIVE_SECS
+    last_prompt: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
-def classify(facts: SessionFacts, alive: bool) -> tuple[str, str]:
+def tool_detail(name: str, hint: str) -> str:
+    """``running ls -la``, ``editing server.py``, ``searching "foo"``, ``running WebFetch``."""
+    if not name:
+        return "running tool"
+    if not hint:
+        return f"running {name}"
+    return f"{_TOOL_VERBS.get(name, 'running')} {hint}"
+
+
+def classify(facts: SessionFacts, alive: bool, active_agents: int = 0) -> tuple[str, str]:
     """Return (status, detail) following the table in the design spec."""
     if not alive:
         return DONE, "finished"
@@ -47,11 +75,87 @@ def classify(facts: SessionFacts, alive: bool) -> tuple[str, str]:
         return WORKING, "working on your prompt"
     if facts.last_kind == "tool_result":
         return WORKING, "thinking"
+    if facts.last_kind == "assistant" and facts.last_stop_reason == "tool_use":
+        return WORKING, tool_detail(facts.last_tool, facts.last_tool_hint)
+    if active_agents:
+        return WORKING, "agents running"  # the main transcript waits on a subagent
     if facts.last_kind == "assistant":
-        if facts.last_stop_reason == "tool_use":
-            return WORKING, "running tool"
         return IDLE, "waiting for you"
     return IDLE, "session started"
+
+
+def hook_override(hook: dict) -> tuple[str, str] | None:
+    """What a Claude Code hook event says the session is doing, or None when it says nothing."""
+    event = hook.get("hook_event_name")
+    if event == "Notification":
+        kind = hook.get("notification_type")
+        if kind == "permission_prompt":
+            return ATTENTION, "needs permission"
+        if kind == "elicitation_dialog":
+            return ATTENTION, "needs your input"
+        if kind == "idle_prompt":
+            return IDLE, "waiting for you"
+        return None
+    if event == "PreToolUse":
+        name = hook.get("tool_name") if isinstance(hook.get("tool_name"), str) else ""
+        if name == "AskUserQuestion":
+            return ATTENTION, "asking you a question"
+        return WORKING, tool_detail(name, tool_hint(name, hook.get("tool_input")))
+    if event == "PostToolUse":
+        return WORKING, "thinking"
+    if event == "UserPromptSubmit":
+        return WORKING, "working on your prompt"
+    if event == "Stop":
+        return IDLE, "waiting for you"
+    if event == "SessionStart":
+        return None if hook.get("source") == "compact" else (IDLE, "session started")
+    return None
+
+
+def apply_hook(current: tuple[str, str], facts: SessionFacts, hook: dict | None, now: float, alive: bool) -> tuple[str, str]:
+    """Let a fresh hook event override the transcript-derived status.
+
+    Newest information wins: the hook only applies while the process is alive,
+    within ``HOOK_TTL`` of its receipt, and when the transcript has not been
+    written since (a tool_result after an approved permission prompt, say).
+    """
+    if not alive or not hook:
+        return current
+    try:
+        ts = float(hook.get("ts") or 0)
+    except (TypeError, ValueError):
+        return current
+    if now - ts > HOOK_TTL:
+        return current
+    if facts.last_ts is not None and facts.last_ts.timestamp() > ts:
+        return current
+    return hook_override(hook) or current
+
+
+def prune_hooks(hooks: dict[str, dict], now: float) -> dict[str, dict]:
+    """Drop hook state older than ``HOOK_TTL``."""
+    return {sid: h for sid, h in hooks.items() if now - float(h.get("ts") or 0) <= HOOK_TTL}
+
+
+def subagent_activity(transcript: Path, now: datetime, window: float = HEADLESS_ACTIVE_SECS) -> tuple[int, int]:
+    """(total, active) subagent transcripts of ``transcript``.
+
+    They live at ``<project>/<session-id>/subagents/*.jsonl`` and, for
+    workflows, one directory deeper; ``.meta.json`` files are not agents.
+    """
+    root = transcript.parent / transcript.stem / "subagents"
+    if not root.is_dir():
+        return 0, 0
+    total = active = 0
+    for path in root.rglob("*.jsonl"):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        total += 1
+        if now.timestamp() - mtime < window:
+            active += 1
+    return total, active
 
 
 def os_pid_alive(pid: int, proc: Path = Path("/proc")) -> bool:
@@ -140,17 +244,31 @@ def load_facts(path: Path) -> tuple[SessionFacts, datetime]:
     return facts, datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
 
 
-def _build(session_id: str, path: Path | None, alive: bool, started_ms: int | None, fallback_cwd: str, headless: bool = False) -> Session:
+def _build(
+    session_id: str,
+    path: Path | None,
+    alive: bool,
+    started_ms: int | None,
+    fallback_cwd: str,
+    now: datetime,
+    hook: dict | None = None,
+    headless: bool = False,
+) -> Session:
     facts = SessionFacts()
     mtime: datetime | None = None
+    agents = active_agents = 0
     if path is not None:
         try:
             facts, mtime = load_facts(path)
         except OSError:
             pass
-    status, detail = classify(facts, alive)
+        agents, active_agents = subagent_activity(path, now)
+    if headless and active_agents:
+        alive = True  # a subagent still writing means the headless run is not over
+    status, detail = classify(facts, alive, active_agents)
     if headless and status != WORKING:
         status, detail = DONE, "finished"  # no process to wait for input
+    status, detail = apply_hook((status, detail), facts, hook, now.timestamp(), alive)
     cwd = facts.cwd or fallback_cwd
     started = datetime.fromtimestamp(started_ms / 1000, tz=timezone.utc) if started_ms else facts.first_ts
     return Session(
@@ -166,6 +284,9 @@ def _build(session_id: str, path: Path | None, alive: bool, started_ms: int | No
         started_at=_iso(started),
         last_activity=_iso(mtime or facts.last_ts),
         messages=facts.assistant_messages,
+        agents=agents,
+        active_agents=active_agents,
+        last_prompt=facts.last_prompt,
     )
 
 
@@ -173,8 +294,11 @@ def collect_sessions(
     settings: Settings,
     now: datetime | None = None,
     pid_alive: Callable[[int], bool] = os_pid_alive,
+    hooks: dict[str, dict] | None = None,
 ) -> tuple[list[Session], dict]:
+    """Return (sessions to show, summary). ``hooks`` is per-session hook state keyed by session id."""
     now = now or datetime.now(timezone.utc)
+    hooks = hooks or {}
     local_midnight = now.astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
     live = _live_sessions(settings.claude_dir, pid_alive)
     # Newest process wins when a resumed session left a stale pid file behind.
@@ -187,7 +311,7 @@ def collect_sessions(
             continue
         seen.add(sid)
         path = find_transcript(settings.claude_dir, sid)
-        sessions.append(_build(sid, path, info["_alive"], info.get("startedAt"), info.get("cwd", "")))
+        sessions.append(_build(sid, path, info["_alive"], info.get("startedAt"), info.get("cwd", ""), now, hooks.get(sid)))
 
     # Transcripts touched today whose process is gone: finished sessions.
     projects = settings.claude_dir / "projects"
@@ -207,18 +331,19 @@ def collect_sessions(
     for mtime, path in finished[: settings.done_sessions_limit]:
         seen.add(path.stem)
         recent = now.timestamp() - mtime < HEADLESS_ACTIVE_SECS
-        sessions.append(_build(path.stem, path, recent, None, "", headless=True))
+        sessions.append(_build(path.stem, path, recent, None, "", now, hooks.get(path.stem), headless=True))
     for stale in [p for p in _facts_cache if p.stem not in seen]:
         _facts_cache.pop(stale, None)
 
-    order = {WORKING: 0, IDLE: 1, DONE: 2}
-    sessions.sort(key=lambda s: (order.get(s.status, 3), -(_epoch(s.last_activity))))
+    order = {ATTENTION: 0, WORKING: 1, IDLE: 2, DONE: 3}
+    sessions.sort(key=lambda s: (order.get(s.status, 4), -(_epoch(s.last_activity))))
     # The summary counts everything; the page only gets the first few cards.
     summary = {
         "today": len(sessions) + hidden_done,
         "done": sum(1 for s in sessions if s.status == DONE) + hidden_done,
         "working": sum(1 for s in sessions if s.status == WORKING),
         "idle": sum(1 for s in sessions if s.status == IDLE),
+        "attention": sum(1 for s in sessions if s.status == ATTENTION),
     }
     return sessions[: settings.sessions_shown], summary
 

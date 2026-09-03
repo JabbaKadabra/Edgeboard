@@ -167,3 +167,161 @@ def test_demo_mode_seek_volume_skip_touch_only_state():
     assert after["spotify"]["title"] == before[1]["title"]
     assert client.get("/api/state").json()["spotify_queue"]["tracks"] == before[2:]
     assert calls == []
+
+
+def _rate_limited(retry_after: str | None = None):
+    import httpx
+
+    headers = {"retry-after": retry_after} if retry_after is not None else {}
+    request = httpx.Request("GET", "https://api.anthropic.com/api/oauth/usage")
+    response = httpx.Response(429, headers=headers, request=request)
+    return httpx.HTTPStatusError("429", request=request, response=response)
+
+
+def _usage_collector(monkeypatch, responses):
+    import asyncio
+
+    from edgeboard.collectors import claude_usage
+    from edgeboard.server import Collectors
+
+    state = State()
+    c = Collectors(Settings(usage_interval=60), state, lambda a: (0, ""))
+    monkeypatch.setattr(claude_usage, "load_token", lambda claude_dir: "tok")
+
+    async def fake_fetch(client, token, url):
+        item = responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(claude_usage, "fetch_usage", fake_fetch)
+
+    async def poll():
+        try:
+            return await c._usage(), None
+        except Exception as exc:  # noqa: BLE001 - the loop's contract
+            return None, exc
+
+    return c, state, lambda: asyncio.run(poll())
+
+
+def test_usage_429_marks_stale_and_backs_off_without_an_error(monkeypatch):
+    ok = {"five_hour": {"utilization": 10, "resets_at": None}}
+    c, state, poll = _usage_collector(monkeypatch, [ok, _rate_limited(), _rate_limited(), _rate_limited(), ok])
+    assert poll() == (None, None)
+    assert state.usage["source"] == "api" and state.usage["stale"] is False
+    delay, exc = poll()
+    assert exc is None and state.usage["stale"] is True
+    assert state.usage["windows"][0]["utilization"] == 10  # last good value kept
+    assert delay == 120
+    assert poll()[0] == 240
+    assert poll()[0] == 480
+    delay, exc = poll()
+    assert (delay, exc) == (None, None) and state.usage["stale"] is False
+
+
+def test_usage_429_backoff_is_capped_and_honours_retry_after(monkeypatch):
+    responses = [_rate_limited("300")] + [_rate_limited()] * 6
+    c, state, poll = _usage_collector(monkeypatch, responses)
+    assert poll()[0] == 300
+    delays = [poll()[0] for _ in range(6)]
+    assert max(delays) == 600 and delays[-1] == 600
+
+
+def test_usage_429_surfaces_an_error_once_stale_for_too_long(monkeypatch):
+    import asyncio
+
+    from edgeboard.server import USAGE_STALE_AFTER
+
+    ok = {"five_hour": {"utilization": 10, "resets_at": None}}
+    c, state, poll = _usage_collector(monkeypatch, [ok, _rate_limited(), _rate_limited()])
+    poll()
+    assert poll()[1] is None
+    c._usage_ok_at -= USAGE_STALE_AFTER + 1
+    _, exc = poll()
+    assert isinstance(exc, RuntimeError) and "rate limited" in str(exc)
+    assert state.usage["stale"] is True
+
+
+def test_usage_non_429_http_errors_still_raise(monkeypatch):
+    import httpx
+
+    request = httpx.Request("GET", "https://x")
+    err = httpx.HTTPStatusError("500", request=request, response=httpx.Response(500, request=request))
+    c, state, poll = _usage_collector(monkeypatch, [err])
+    _, exc = poll()
+    assert isinstance(exc, httpx.HTTPStatusError) and state.usage["stale"] is True
+
+
+def test_loop_uses_delay_returned_by_collector(monkeypatch):
+    import asyncio
+
+    from edgeboard.server import Collectors
+
+    c = Collectors(Settings(), State(), lambda a: (0, ""))
+    sleeps = []
+    results = iter([None, 7.0, None])
+
+    async def fn():
+        return next(results)
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 3:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    try:
+        asyncio.run(c._loop("x", 3.0, fn))
+    except asyncio.CancelledError:
+        pass
+    assert [round(s) for s in sleeps] == [3, 7, 3]
+
+
+def test_hook_route_stores_payload_per_session():
+    client, _ = make_client()
+    body = {"session_id": "abc", "hook_event_name": "Notification", "cwd": "/home/me/proj", "notification_type": "permission_prompt", "message": "Claude needs your permission"}
+    r = client.post("/api/hook", json=body)
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    stored = client.app.state.dashboard.hooks["abc"]
+    assert stored["hook_event_name"] == "Notification" and stored["notification_type"] == "permission_prompt"
+    assert isinstance(stored["ts"], float) and stored["ts"] > 0
+    # a newer event for the same session replaces the old one
+    client.post("/api/hook", json={"session_id": "abc", "hook_event_name": "Stop"})
+    assert client.app.state.dashboard.hooks["abc"]["hook_event_name"] == "Stop"
+
+
+def test_hook_route_rejects_malformed_bodies():
+    client, _ = make_client()
+    assert client.post("/api/hook", content=b"not json", headers={"content-type": "application/json"}).status_code == 400
+    assert client.post("/api/hook", json=["a", "list"]).status_code == 400
+    assert client.post("/api/hook", json={"hook_event_name": "Stop"}).status_code == 400  # no session id
+    assert client.post("/api/hook", json={"session_id": "abc"}).status_code == 400  # no event name
+    assert client.post("/api/hook", json={"session_id": 5, "hook_event_name": "Stop"}).status_code == 400
+    assert client.app.state.dashboard.hooks == {}
+
+
+def test_sessions_collector_passes_hooks_and_prunes_expired(monkeypatch, tmp_path):
+    import asyncio
+    import time
+
+    from edgeboard.collectors import claude_sessions
+    from edgeboard.server import Collectors
+
+    state = State()
+    state.hooks = {
+        "fresh": {"hook_event_name": "Stop", "ts": time.time()},
+        "old": {"hook_event_name": "Stop", "ts": time.time() - claude_sessions.HOOK_TTL - 1},
+    }
+    seen = {}
+
+    def fake_collect(settings, now=None, pid_alive=None, hooks=None):
+        seen["hooks"] = hooks
+        return [], {"today": 0, "done": 0, "working": 0, "idle": 0, "attention": 0}
+
+    import edgeboard.server as server
+
+    monkeypatch.setattr(server, "collect_sessions", fake_collect)
+    c = Collectors(Settings(claude_dir=tmp_path), state, lambda a: (0, ""))
+    asyncio.run(c._sessions())
+    assert set(seen["hooks"]) == {"fresh"} and set(state.hooks) == {"fresh"}

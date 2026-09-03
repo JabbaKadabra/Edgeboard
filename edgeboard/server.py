@@ -5,19 +5,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Awaitable, Callable
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from edgeboard.collectors import claude_usage, spotify, spotify_queue
-from edgeboard.collectors.claude_sessions import collect_sessions
+from edgeboard.collectors.claude_sessions import collect_sessions, os_pid_alive, prune_hooks
 from edgeboard.collectors.system import SystemSampler
 from edgeboard.config import Settings
 from edgeboard.demo import fill_demo
@@ -39,6 +40,12 @@ class SkipBody(BaseModel):
     index: int = Field(ge=0, lt=spotify_queue.QUEUE_LIMIT)
 
 
+# A rate-limited usage poll keeps the last value and backs off; only once the
+# panel has been stale this long is it worth a red error under the clock.
+USAGE_STALE_AFTER = 15 * 60
+USAGE_BACKOFF_MAX = 10 * 60
+
+
 class Collectors:
     """Background loops that keep ``State`` fresh. One task per source."""
 
@@ -52,6 +59,8 @@ class Collectors:
         self._events_cache: list = []
         self._token: str | None = None
         self._token_checked = 0.0
+        self._usage_ok_at = 0.0  # loop time of the last successful usage poll
+        self._usage_rate_limited = 0  # consecutive 429s, drives the backoff
         self._queue_client = spotify_queue.QueueClient(settings.spotify_token_file)
 
     async def start(self) -> None:
@@ -86,18 +95,22 @@ class Collectors:
 
         asyncio.get_running_loop().create_task(refresh())
 
-    async def _loop(self, name: str, interval: float, fn: Callable[[], Awaitable[None]]) -> None:
+    async def _loop(self, name: str, interval: float, fn: Callable[[], Awaitable[float | None]]) -> None:
+        """Run ``fn`` every ``interval`` seconds; it may return a longer delay for the next round."""
         while True:
             started = asyncio.get_running_loop().time()
+            wait = interval
             try:
-                await fn()
+                delay = await fn()
+                if delay:
+                    wait = delay
                 self._note_error(name, None)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - a collector must never take the server down
                 self._note_error(name, f"{type(exc).__name__}: {exc}")
             elapsed = asyncio.get_running_loop().time() - started
-            await asyncio.sleep(max(0.1, interval - elapsed))
+            await asyncio.sleep(max(0.1, wait - elapsed))
 
     def _note_error(self, name: str, message: str | None) -> None:
         if message != self._last_error.get(name):
@@ -138,7 +151,9 @@ class Collectors:
         self.state.spotify_queue = {"configured": True, "tracks": [t.to_dict() for t in tracks]}
 
     async def _sessions(self) -> None:
-        sessions, summary = await self._run(collect_sessions, self.settings)
+        # Copy the hook map for the executor thread; the hook route writes it from the loop.
+        self.state.hooks = prune_hooks(self.state.hooks, time.time())
+        sessions, summary = await self._run(collect_sessions, self.settings, None, os_pid_alive, dict(self.state.hooks))
         self.state.sessions = [s.to_dict() for s in sessions]
         self.state.sessions_summary = summary
 
@@ -157,9 +172,12 @@ class Collectors:
             usage["source"] = "local"
         self.state.usage = usage
 
-    async def _usage(self) -> None:
+    async def _usage(self) -> float | None:
+        """Poll the usage endpoint. Returns a backoff delay while rate limited."""
         now = datetime.now(timezone.utc)
         loop_time = asyncio.get_running_loop().time()
+        if not self._usage_ok_at:
+            self._usage_ok_at = loop_time
         if self._token is None or loop_time - self._token_checked > 300:
             self._token = await self._run(claude_usage.load_token, self.settings.claude_dir)
             self._token_checked = loop_time
@@ -173,16 +191,39 @@ class Collectors:
             async with httpx.AsyncClient() as client:
                 data = await claude_usage.fetch_usage(client, self._token, self.settings.usage_url)
         except (httpx.HTTPError, ValueError) as exc:
-            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 401:
-                self._token = None  # force a re-read next round; Claude Code may have refreshed it
             usage["stale"] = True
             self.state.usage = usage
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 401:
+                self._token = None  # force a re-read next round; Claude Code may have refreshed it
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+                return self._usage_backoff(exc.response, loop_time)
             raise
+        self._usage_ok_at = loop_time
+        self._usage_rate_limited = 0
         usage["windows"] = [w.to_dict() for w in claude_usage.parse_usage_response(data, now)]
         usage["source"] = "api"
         usage["stale"] = False
         usage["updated_at"] = now.isoformat()
         self.state.usage = usage
+        return None
+
+    def _usage_backoff(self, response: httpx.Response, loop_time: float) -> float:
+        """The endpoint is shared with running Claude Code sessions and rate limits bursts.
+
+        Keep the last value (already marked stale), double the poll interval per
+        consecutive 429 up to ``USAGE_BACKOFF_MAX`` and honour a Retry-After that
+        asks for longer. It only becomes an error after ``USAGE_STALE_AFTER``.
+        """
+        self._usage_rate_limited += 1
+        delay = min(self.settings.usage_interval * 2**self._usage_rate_limited, USAGE_BACKOFF_MAX)
+        try:
+            delay = max(delay, float(response.headers.get("retry-after", 0)))
+        except ValueError:
+            pass
+        if loop_time - self._usage_ok_at > USAGE_STALE_AFTER:
+            raise RuntimeError(f"usage endpoint rate limited for {int((loop_time - self._usage_ok_at) // 60)} min")
+        log.debug("usage endpoint rate limited, next poll in %.0f s", delay)
+        return delay
 
 
 async def sse_stream(state: State, interval: float = 1.0):
@@ -240,6 +281,23 @@ def create_app(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
+
+    # Claude Code hooks (README: "Session state from hooks") post their stdin JSON
+    # here. The body is stored as-is per session with a receipt time; the sessions
+    # collector merges it into the cards and drops it after HOOK_TTL.
+    @app.post("/api/hook")
+    async def api_hook(request: Request):
+        try:
+            body = json.loads(await request.body())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="body must be JSON")
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="body must be a JSON object")
+        sid, event = body.get("session_id"), body.get("hook_event_name")
+        if not isinstance(sid, str) or not sid or not isinstance(event, str) or not event:
+            raise HTTPException(status_code=400, detail="session_id and hook_event_name are required")
+        state.hooks[sid] = {**body, "ts": time.time()}
+        return {"ok": True}
 
     async def _spotify_command(fn, *args) -> dict:
         """Run one playerctl command, then re-read metadata so the reply is current."""

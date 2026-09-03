@@ -62,3 +62,55 @@ def test_spotify_seek_volume_and_tappable_scrollable_queue():
     assert re.search(r"^\.queue\s*\{[^}]*overflow-y:\s*auto", css, re.M)
     assert "getBoundingClientRect().bottom" not in js.split("function renderQueue")[1].split("function tickProgress")[0]
     assert 'postSpotify("skip"' in js and "data-index" in js
+
+
+def test_mascot_is_pomodoro_tap_target_not_bouncing():
+    html = (STATIC / "index.html").read_text()
+    js = (STATIC / "app.js").read_text()
+    css = (STATIC / "style.css").read_text()
+    # the mascot no longer bobs while sessions work
+    assert "bounce" not in css
+    sessions_js = js.split("function renderSessions")[1].split("function escapeHtml")[0]
+    assert "mascot" not in sessions_js
+    # tapping the mascot area runs a 25 min focus / 5 min break pomodoro shown above the clock
+    assert 'id="mascot-wrap"' in html and 'id="pomo"' in html
+    assert html.index('id="pomo"') < html.index('class="clock"')
+    pomo_js = js.split("// ---------- pomodoro ----------")[1].split("// ----------")[0]
+    assert "25 * 60" in pomo_js and "5 * 60" in pomo_js
+    assert '$("mascot-wrap").addEventListener("click"' in pomo_js
+    assert "COFFEE" in js  # the break phase draws a coffee cup instead of Claude
+    # phase ends flash the mascot; the countdown is smaller than the clock
+    assert re.search(r"^\.mascot\.flash\s*\{[^}]*animation:\s*flash", css, re.M)
+    pomo_px = int(re.search(r"^\.pomo\s*\{[^}]*font-size:\s*(\d+)px", css, re.M).group(1))
+    clock_px = int(re.search(r"^\.clock\s*\{[^}]*font-size:\s*(\d+)px", css, re.M).group(1))
+    assert pomo_px < clock_px
+
+
+def test_pomodoro_chimes_on_phase_change():
+    js = (STATIC / "app.js").read_text()
+    pomo_js = js.split("// ---------- pomodoro ----------")[1].split("// ----------")[0]
+    # transitions play a synthesized WebAudio chime (no asset, the kiosk may be offline);
+    # the context is unlocked on the first tap so the automatic transitions at zero can sound
+    assert "AudioContext" in pomo_js and "resume()" in pomo_js
+    assert "chime(" in pomo_js.split("function advancePomo")[1]
+    # the kiosk restarts without any tap, so Chromium must not require a gesture for audio
+    kiosk = (ROOT / "scripts" / "kiosk.sh").read_text()
+    assert "--autoplay-policy=no-user-gesture-required" in kiosk
+
+
+def test_session_cards_show_agents_attention_and_open_an_overlay():
+    html = (STATIC / "index.html").read_text()
+    js = (STATIC / "app.js").read_text()
+    css = (STATIC / "style.css").read_text()
+    sessions_js = js.split("// ---------- sessions ----------")[1].split("// ---------- spotify ----------")[0]
+    # the card foot carries a subagent badge fed by the snapshot's agents / active_agents
+    assert "card-agents" in sessions_js and "active_agents" in sessions_js
+    # "attention" (permission prompt / question from a hook) gets its own colour and pulses
+    assert re.search(r"^\.attention \.pill\s*\{", css, re.M) and re.search(r"^\.card\.attention\s*\{", css, re.M)
+    # tapping a card opens a full-height overlay kept in index.html and filled from every snapshot
+    assert 'id="overlay"' in html and 'id="ov-prompt"' in html and 'id="ov-cwd"' in html
+    assert '$("sessions").addEventListener("click"' in sessions_js
+    assert "last_prompt" in sessions_js and "renderOverlay(" in sessions_js.split("function renderSessions")[1]
+    # dismissed by tapping the backdrop or after 20 s
+    assert "20 * 1000" in sessions_js or "20000" in sessions_js
+    assert '$("overlay").addEventListener("click"' in sessions_js

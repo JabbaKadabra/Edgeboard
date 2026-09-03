@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 TITLE_MAX = 60
+PROMPT_MAX = 300
+TOOL_HINT_MAX = 40
 # Paired tags Claude Code injects into prompts (<system-reminder>…</system-reminder>,
 # <command-name>…</command-name>, …). Requires a matching closing tag so that
 # code like ``x < 5 and y > 3`` or ``List<String>`` is left alone.
@@ -49,6 +51,9 @@ class SessionFacts:
     last_ts: datetime | None = None
     assistant_messages: int = 0
     session_id: str = ""
+    last_tool: str = ""  # name of the last tool_use block in the last assistant message
+    last_tool_hint: str = ""  # short description of its input, see ``tool_hint``
+    last_prompt: str = ""  # most recent user prompt, cleaned, up to PROMPT_MAX chars
 
 
 def parse_ts(value: str | None) -> datetime | None:
@@ -140,6 +145,41 @@ def clean_prompt(text: str, limit: int = TITLE_MAX) -> str:
     if len(text) > limit:
         text = text[: limit - 1].rstrip() + "…"
     return text
+
+
+def clean_text(text: str, limit: int) -> str:
+    """Whole prompt with tags removed and whitespace collapsed, truncated."""
+    text = re.sub(r"\s+", " ", _TAG_RE.sub("", text)).strip()
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + "…"
+    return text
+
+
+def tool_hint(name: str, tool_input) -> str:
+    """A short, human-readable summary of a tool call's input.
+
+    Bash: the command; Read/Edit/Write: the file's basename; Grep/Glob: the
+    pattern; Agent: its description. Empty when nothing recognisable is there.
+    """
+    if not isinstance(tool_input, dict):
+        return ""
+
+    def field(key: str) -> str:
+        value = tool_input.get(key)
+        return value.strip() if isinstance(value, str) else ""
+
+    if name == "Bash":
+        hint = re.sub(r"\s+", " ", field("command"))
+        return hint[: TOOL_HINT_MAX - 1].rstrip() + "…" if len(hint) > TOOL_HINT_MAX else hint
+    if name in ("Read", "Edit", "Write", "NotebookEdit"):
+        path = field("file_path") or field("notebook_path")
+        return Path(path).name if path else ""
+    if name in ("Grep", "Glob"):
+        pattern = field("pattern")
+        return f'"{pattern}"' if pattern else ""
+    if name in ("Agent", "Task"):
+        return field("description")
+    return ""
 
 
 def _message(entry: dict) -> dict:
@@ -253,11 +293,19 @@ class SessionParser:
                 if kind == "user":
                     facts.last_kind = _user_kind(entry)
                     facts.last_stop_reason = ""
-                    if facts.last_kind == "user_prompt" and not self._first_prompt:
-                        self._first_prompt = clean_prompt(_prompt_text(entry))
+                    if facts.last_kind == "user_prompt":
+                        prompt = _prompt_text(entry)
+                        if not self._first_prompt:
+                            self._first_prompt = clean_prompt(prompt)
+                        facts.last_prompt = clean_text(prompt, PROMPT_MAX)
                 else:
                     facts.last_kind = "assistant"
                     facts.last_stop_reason = str(message.get("stop_reason") or "")
+                    facts.last_tool, facts.last_tool_hint = "", ""
+                    for block in _content_blocks(message):
+                        if block.get("type") == "tool_use" and isinstance(block.get("name"), str):
+                            facts.last_tool = block["name"]
+                            facts.last_tool_hint = tool_hint(block["name"], block.get("input"))
                     if isinstance(message.get("model"), str) and message["model"]:
                         facts.model = message["model"]
                     usage = message.get("usage")

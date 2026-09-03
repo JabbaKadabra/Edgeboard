@@ -54,7 +54,7 @@ def test_collect_sessions(tmp_path):
     assert live.context_tokens == 1210
     assert live.started_at.startswith("2026-09-0")
     assert by_name["Old one"].status == DONE
-    assert summary == {"today": 2, "done": 1, "working": 1, "idle": 0}
+    assert summary == {"today": 2, "done": 1, "working": 1, "idle": 0, "attention": 0}
     assert sessions[0].name == "Live one"  # working sorts first
 
 
@@ -101,7 +101,7 @@ def test_summary_today_counts_finished_sessions_beyond_display_limit(tmp_path):
     settings = Settings(claude_dir=tmp_path, done_sessions_limit=1)
     sessions, summary = collect_sessions(settings, pid_alive=lambda pid: pid == 4242)
     assert len(sessions) == 2  # one live, one displayed done
-    assert summary == {"today": 5, "done": 4, "working": 1, "idle": 0}
+    assert summary == {"today": 5, "done": 4, "working": 1, "idle": 0, "attention": 0}
 
 
 def test_sessions_shown_caps_cards_but_not_summary(tmp_path):
@@ -112,7 +112,7 @@ def test_sessions_shown_caps_cards_but_not_summary(tmp_path):
     settings = Settings(claude_dir=tmp_path, sessions_shown=2)
     sessions, summary = collect_sessions(settings, pid_alive=lambda pid: pid == 4242)
     assert [s.status for s in sessions] == [WORKING, DONE]  # working sorts first, then the cap applies
-    assert summary == {"today": 6, "done": 5, "working": 1, "idle": 0}
+    assert summary == {"today": 6, "done": 5, "working": 1, "idle": 0, "attention": 0}
 
 
 def test_os_pid_alive_requires_claude_cmdline(tmp_path):
@@ -195,3 +195,153 @@ def test_load_facts_waits_for_a_complete_line(tmp_path):
         fh.write(line[40:] + "\n")
     facts, _ = load_facts(path)
     assert facts.assistant_messages == 1 and facts.last_stop_reason == "tool_use"
+
+
+def _tool(name, hint=""):
+    return SessionFacts(last_kind="assistant", last_stop_reason="tool_use", last_tool=name, last_tool_hint=hint)
+
+
+def test_classify_names_the_running_tool():
+    assert classify(_tool("Bash", "ls -la"), True) == (WORKING, "running ls -la")
+    assert classify(_tool("Read", "README.md"), True) == (WORKING, "reading README.md")
+    assert classify(_tool("Edit", "server.py"), True) == (WORKING, "editing server.py")
+    assert classify(_tool("Write", "notes.md"), True) == (WORKING, "writing notes.md")
+    assert classify(_tool("Grep", '"foo"'), True) == (WORKING, 'searching "foo"')
+    assert classify(_tool("Agent", "Review the diff"), True) == (WORKING, "agent: Review the diff")
+    assert classify(_tool("WebFetch"), True) == (WORKING, "running WebFetch")
+    assert classify(_tool("Bash"), True) == (WORKING, "running Bash")
+    assert classify(_tool(""), True) == (WORKING, "running tool")
+
+
+def test_classify_idle_transcript_with_active_subagent_is_working():
+    idle = SessionFacts(last_kind="assistant", last_stop_reason="end_turn")
+    assert classify(idle, True, active_agents=2) == (WORKING, "agents running")
+    assert classify(idle, True, active_agents=0) == (IDLE, "waiting for you")
+    assert classify(idle, False, active_agents=2) == (DONE, "finished")
+    assert classify(_tool("Bash", "ls"), True, active_agents=1) == (WORKING, "running ls")
+
+
+def test_subagent_activity_counts_total_and_recent_files(tmp_path):
+    from edgeboard.collectors.claude_sessions import subagent_activity
+
+    transcript = tmp_path / "projects" / "-home-me-proj" / f"{SESSION}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text(user_line("x"))
+    now = datetime.now(timezone.utc)
+    assert subagent_activity(transcript, now) == (0, 0)  # no subagent dir
+    agents = transcript.parent / SESSION / "subagents"
+    agents.mkdir(parents=True)
+    old = agents / "agent-a1.jsonl"
+    old.write_text(assistant_line("m1"))
+    stamp = time.time() - 300
+    os.utime(old, (stamp, stamp))
+    (agents / "agent-a1.meta.json").write_text("{}")  # meta files are not agents
+    assert subagent_activity(transcript, now) == (1, 0)
+    (agents / "agent-a2.jsonl").write_text(assistant_line("m2"))
+    nested = agents / "workflows" / "wf_1"
+    nested.mkdir(parents=True)
+    (nested / "agent-a3.jsonl").write_text(assistant_line("m3"))
+    assert subagent_activity(transcript, now) == (3, 2)
+
+
+def test_collect_sessions_reports_agents_and_marks_idle_session_working(tmp_path):
+    settings = _write_claude_dir(tmp_path)
+    projects = tmp_path / "projects" / "-home-me-proj"
+    (projects / f"{SESSION}.jsonl").write_text("\n".join([user_line("Live one"), assistant_line("m1", stop_reason="end_turn")]))
+    agents = projects / SESSION / "subagents"
+    agents.mkdir(parents=True)
+    (agents / "agent-a1.jsonl").write_text(assistant_line("m2"))
+    sessions, summary = collect_sessions(settings, pid_alive=lambda pid: pid == 4242)
+    live = next(s for s in sessions if s.id == SESSION)
+    assert (live.agents, live.active_agents) == (1, 1)
+    assert (live.status, live.detail) == (WORKING, "agents running")
+    assert summary["working"] == 1
+    done = next(s for s in sessions if s.id != SESSION)
+    assert (done.agents, done.active_agents) == (0, 0)
+
+
+def test_headless_session_with_a_fresh_subagent_is_working(tmp_path):
+    projects = tmp_path / "projects" / "-home-me-proj"
+    projects.mkdir(parents=True)
+    sid = "aaaaaaaa-0000-0000-0000-000000000000"
+    p = projects / f"{sid}.jsonl"
+    p.write_text("\n".join([user_line("Fan out"), assistant_line("m1", stop_reason="tool_use", tool=("Agent", {"description": "Review"}))]))
+    old = time.time() - 300
+    os.utime(p, (old, old))
+    agents = projects / sid / "subagents"
+    agents.mkdir(parents=True)
+    (agents / "agent-a1.jsonl").write_text(assistant_line("m2"))
+    sessions, _ = collect_sessions(Settings(claude_dir=tmp_path), pid_alive=lambda pid: False)
+    assert (sessions[0].status, sessions[0].detail) == (WORKING, "agent: Review")  # the Agent tool_use names it
+
+
+def test_session_dict_carries_last_prompt(tmp_path):
+    settings = _write_claude_dir(tmp_path)
+    sessions, _ = collect_sessions(settings, pid_alive=lambda pid: pid == 4242)
+    live = next(s for s in sessions if s.id == SESSION)
+    assert live.to_dict()["last_prompt"] == "Live one"
+
+
+# ---------- hook state (POST /api/hook) ----------
+
+
+def _hook(event, ts, **fields):
+    return {"hook_event_name": event, "ts": ts, **fields}
+
+
+def test_apply_hook_permission_prompt_needs_attention():
+    from edgeboard.collectors.claude_sessions import ATTENTION, apply_hook
+
+    facts = SessionFacts(last_kind="assistant", last_stop_reason="tool_use", last_tool="Bash", last_tool_hint="rm -rf build")
+    hook = _hook("Notification", 1000.0, notification_type="permission_prompt", message="Claude needs your permission to use Bash")
+    assert apply_hook((WORKING, "running rm -rf build"), facts, hook, now=1010.0, alive=True) == (ATTENTION, "needs permission")
+
+
+def test_apply_hook_event_table():
+    from edgeboard.collectors.claude_sessions import ATTENTION, apply_hook
+
+    facts = SessionFacts(last_kind="assistant", last_stop_reason="end_turn")
+    base = (IDLE, "waiting for you")
+
+    def run(event, **fields):
+        return apply_hook(base, facts, _hook(event, 1000.0, **fields), now=1001.0, alive=True)
+
+    assert run("Notification", notification_type="elicitation_dialog") == (ATTENTION, "needs your input")
+    assert run("Notification", notification_type="idle_prompt") == (IDLE, "waiting for you")
+    assert run("Notification", notification_type="auth_success") == base
+    assert run("PreToolUse", tool_name="AskUserQuestion", tool_input={}) == (ATTENTION, "asking you a question")
+    assert run("PreToolUse", tool_name="Bash", tool_input={"command": "pytest -q"}) == (WORKING, "running pytest -q")
+    assert run("PreToolUse", tool_name="Read", tool_input={"file_path": "/a/b.py"}) == (WORKING, "reading b.py")
+    assert run("PostToolUse", tool_name="Bash") == (WORKING, "thinking")
+    assert run("UserPromptSubmit", prompt="hi") == (WORKING, "working on your prompt")
+    assert run("Stop") == (IDLE, "waiting for you")
+    assert run("SessionStart", source="startup") == (IDLE, "session started")
+    assert run("SessionStart", source="compact") == base
+    assert run("SomethingNew") == base
+
+
+def test_apply_hook_ignores_expired_or_dead_or_older_than_transcript():
+    from edgeboard.collectors.claude_sessions import HOOK_TTL, apply_hook
+
+    hook = _hook("Notification", 1000.0, notification_type="permission_prompt")
+    facts = SessionFacts(last_kind="assistant", last_stop_reason="tool_use", last_ts=datetime.fromtimestamp(990.0, tz=timezone.utc))
+    base = (WORKING, "running tool")
+    assert apply_hook(base, facts, hook, now=1000.0 + HOOK_TTL + 1, alive=True) == base  # expired
+    assert apply_hook((DONE, "finished"), facts, hook, now=1001.0, alive=False) == (DONE, "finished")  # gone: the pid check wins
+    newer = SessionFacts(last_kind="tool_result", last_ts=datetime.fromtimestamp(1005.0, tz=timezone.utc))
+    assert apply_hook((WORKING, "thinking"), newer, hook, now=1010.0, alive=True) == (WORKING, "thinking")  # the transcript moved on
+    assert apply_hook(base, facts, None, now=1001.0, alive=True) == base
+
+
+def test_collect_sessions_merges_hooks_and_sorts_attention_first(tmp_path):
+    from edgeboard.collectors.claude_sessions import ATTENTION
+
+    settings = _write_claude_dir(tmp_path)
+    now = datetime.now(timezone.utc)
+    hooks = {SESSION: _hook("Notification", now.timestamp(), notification_type="permission_prompt")}
+    sessions, summary = collect_sessions(settings, now, pid_alive=lambda pid: pid == 4242, hooks=hooks)
+    assert (sessions[0].id, sessions[0].status, sessions[0].detail) == (SESSION, ATTENTION, "needs permission")
+    assert summary == {"today": 2, "done": 1, "working": 0, "idle": 0, "attention": 1}
+    # an unknown session id in the hook map is ignored
+    sessions, _ = collect_sessions(settings, now, pid_alive=lambda pid: pid == 4242, hooks={"nope": hooks[SESSION]})
+    assert sessions[0].status == WORKING

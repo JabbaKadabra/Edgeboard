@@ -96,14 +96,18 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 
 /* ---------- column 1 ---------- */
 .col-clock { align-items: center; justify-content: space-between; padding: 6px 0; }
-.mascot-wrap { flex: 1; display: flex; align-items: center; justify-content: center; width: 100%; }
+.mascot-wrap { flex: 1; display: flex; align-items: center; justify-content: center; width: 100%; cursor: pointer; }
 .mascot { width: 176px; height: 128px; image-rendering: pixelated; }
 .mascot rect { fill: var(--accent); }
 .mascot rect.eye { fill: var(--bg); animation: blink 5s infinite; }
-.mascot.working { animation: bounce 1.2s ease-in-out infinite; }
-.mascot.idle { opacity: .9; }
+.mascot rect.steam { fill: var(--muted); }
+.mascot.flash { animation: flash .3s 4; }
 @keyframes blink { 0%, 92%, 100% { opacity: 1; } 95%, 97% { opacity: 0; } }
-@keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+@keyframes flash { 0%, 100% { opacity: 1; } 50% { opacity: .15; } }
+/* pomodoro countdown above the clock: amber while focusing, purple on the coffee break */
+.pomo { width: 100%; font-size: 30px; font-weight: 800; line-height: 1; letter-spacing: -.02em; color: var(--accent); margin-bottom: 8px; }
+.pomo-label { font-size: 15px; font-weight: 400; letter-spacing: 0; color: var(--muted); margin-right: 8px; }
+.pomo.break { color: var(--done); }
 .clock { width: 100%; font-size: 88px; font-weight: 800; line-height: 1; letter-spacing: -.06em; display: flex; align-items: baseline; }
 .clock-s { font-size: 26px; margin-left: 6px; color: var(--muted); font-weight: 400; letter-spacing: 0; }
 .clock-date { width: 100%; font-size: 16px; color: var(--muted); margin-top: 10px; }
@@ -172,8 +176,11 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 .card {
   background: var(--bg); border: 1px solid var(--border);
   padding: 16px 20px; display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: hidden;
+  cursor: pointer;  /* tap opens the detail overlay */
 }
+.card:active { background: var(--panel-2); }
 .card.working { border-color: var(--accent); }
+.card.attention { border-color: var(--pink); }   /* blocked on you: permission prompt or question (from hooks) */
 .card.done { opacity: .6; }
 .card-top { display: flex; justify-content: space-between; align-items: baseline; font-size: 16px; }
 .pill { font-weight: 400; }
@@ -182,6 +189,9 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 .done .pill::before { content: "✓"; }
 .working .pill { color: var(--accent); }
 .working .pill::before { animation: pulse 1.4s infinite; display: inline-block; }
+.attention .pill::before { content: "!"; font-weight: 800; }
+.attention .pill { color: var(--pink); }
+.attention .pill::before { animation: pulse .7s infinite; display: inline-block; }
 .idle .pill { color: var(--muted); }
 .done .pill { color: var(--done); }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
@@ -189,12 +199,36 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 .card-title::before { content: "❯ "; color: var(--ok); }
 .card-proj { font-size: 16px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card-proj b { color: var(--pink); font-weight: 400; }
-.card-detail { font-size: 17px; color: var(--muted); margin-top: auto; }
+.card-detail { font-size: 17px; color: var(--muted); margin-top: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.attention .card-detail { color: var(--pink); }
 .card-foot { display: flex; flex-wrap: wrap; gap: 0 8px; font-size: 15px; color: var(--muted); }
 .tag { white-space: nowrap; }
 .tag + .tag::before { content: "·"; margin-right: 6px; }
 .tag.model { color: var(--cyan); }
+.tag.card-agents.active { color: var(--accent); }   /* a subagent wrote in the last minute */
 .sessions-empty { color: var(--muted); text-align: center; padding: 40px 0; }
+
+/* session detail overlay: full height, the card's colours, dismissed by tapping the backdrop or after 20 s */
+.overlay { position: fixed; inset: 0; z-index: 20; display: flex; justify-content: center; padding: 18px; background: rgba(21, 22, 29, .82); }
+.overlay-card {
+  width: min(1200px, 100%); background: var(--panel); border: 1px solid var(--border);
+  padding: 24px 28px; display: flex; flex-direction: column; gap: 16px; min-height: 0; overflow: hidden;
+}
+.overlay-card.working { border-color: var(--accent); }
+.overlay-card.attention { border-color: var(--pink); }
+.overlay-card.done { border-color: var(--done); }
+.ov-top { display: flex; gap: 18px; align-items: baseline; font-size: 18px; }
+.ov-detail { color: var(--text); }
+.ov-top .muted { margin-left: auto; }
+.ov-title { font-weight: 700; font-size: 30px; line-height: 1.2; }
+.ov-title::before { content: "❯ "; color: var(--ok); }
+.ov-grid { display: grid; grid-template-columns: max-content 1fr; column-gap: 24px; row-gap: 6px; margin: 0; font-size: 18px; }
+.ov-grid dt { color: var(--muted); }
+.ov-grid dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+#ov-cwd { color: var(--pink); }
+#ov-model { color: var(--cyan); }
+.ov-prompt-head { font-size: 15px; color: var(--muted); border-top: 1px dashed var(--border); padding-top: 12px; }
+.ov-prompt { font-size: 19px; line-height: 1.4; color: var(--accent-2); overflow: hidden; min-height: 0; overflow-wrap: anywhere; }
 
 /* ---------- column 4 ---------- */
 .panel-spotify { flex: 1; display: flex; flex-direction: column; gap: 12px; min-height: 0; }

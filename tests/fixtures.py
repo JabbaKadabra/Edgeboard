@@ -40,8 +40,12 @@ def assistant_line(
     output_tokens: int = 100,
     cache_read: int = 1000,
     cache_write: int = 200,
+    tool: tuple[str, dict] | None = None,
     **extra,
 ) -> str:
+    content = [{"type": "text", "text": "hi"}]
+    if tool is not None:
+        content.append({"type": "tool_use", "id": "toolu_1", "name": tool[0], "input": tool[1]})
     entry = {
         "type": "assistant",
         "uuid": extra.pop("uuid", "a-" + msg_id),
@@ -56,7 +60,7 @@ def assistant_line(
             "role": "assistant",
             "model": model,
             "stop_reason": stop_reason,
-            "content": [{"type": "text", "text": "hi"}],
+            "content": content,
             "usage": {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,

@@ -8,7 +8,10 @@ It shows, live:
 - **Claude usage** – 5-hour and weekly limits with % used and time until
   reset, today's token totals, and a 24-hour usage histogram.
 - **Claude Code sessions** – a card per session with title, project, branch,
-  model, context size, and whether it is working, idle, or done.
+  model, context size, subagent count, and whether it is working (and on
+  which tool or file), idle, done, or waiting for you to approve a permission
+  or answer a question. Tap a card for the full title, path, timings and the
+  last prompt.
 - **Spotify** – current track with album art, a tap-to-seek progress bar, a
   volume slider, and touch controls for previous / play-pause / next (via
   MPRIS, no API keys). The "up next" list scrolls, and tapping a track skips
@@ -72,7 +75,7 @@ If the browser never appears, check `journalctl --user -u edgeboard-kiosk`.
 |----------|----------------------------------------------------------------------------------------------------------|
 | Limits   | Claude's OAuth usage endpoint, using the token in `~/.claude/.credentials.json` (same as `/usage` in Claude Code). Without a token the panel falls back to token counts from local transcripts and is labelled "estimated". |
 | Today / timeline | `~/.claude/projects/*/*.jsonl` transcript files.                                                  |
-| Sessions | `~/.claude/sessions/*.json` (live processes, checked against `/proc/<pid>/cmdline`) plus transcripts modified today. A transcript without a process (`claude -p`, remote sessions) counts as working while it was written in the last 60 s and Claude is mid-turn. |
+| Sessions | `~/.claude/sessions/*.json` (live processes, checked against `/proc/<pid>/cmdline`) plus transcripts modified today. A transcript without a process (`claude -p`, remote sessions) counts as working while it was written in the last 60 s and Claude is mid-turn. Subagents are the `*.jsonl` files under `<project>/<session>/subagents/`; one written in the last 60 s counts as active. Optional: [hooks](#session-state-from-hooks) for states the transcript cannot show. |
 | Spotify  | `playerctl -p spotify` (MPRIS over D-Bus). Set `EDGEBOARD_SPOTIFY_PLAYER` for another player name. Spotify's MPRIS position is only refreshed on play/pause/seek, so the progress bar is interpolated client-side and can drift by a few seconds. |
 | Up next  | Spotify Web API `/me/player/queue`, optional: see [Spotify queue](#spotify-queue). MPRIS does not expose the queue. |
 | System   | `psutil`, `/sys/class/hwmon`, `nvidia-smi` or `/sys/class/drm/card*/device` for AMD.                     |
@@ -107,6 +110,49 @@ from `~/.claude/.credentials.json`.
 The server has no authentication and exposes session titles, project paths
 and usage data. Keep `EDGEBOARD_HOST` on `127.0.0.1`; if you must reach it from
 another machine, put it behind a reverse proxy that adds auth.
+
+## Session state from hooks
+
+The transcript cannot tell that Claude is waiting for you to approve a
+permission or answer a question, and it only learns about a `Stop` a while
+later. Claude Code hooks can post those events straight to the dashboard.
+Add this to `~/.claude/settings.json` (merge with any hooks you already have;
+change the port if you set `EDGEBOARD_PORT`):
+
+```json
+{
+  "hooks": {
+    "Notification":     [{"hooks": [{"type": "command", "command": "curl -s -m 1 -X POST --data-binary @- http://127.0.0.1:8765/api/hook >/dev/null || true"}]}],
+    "PreToolUse":       [{"hooks": [{"type": "command", "command": "curl -s -m 1 -X POST --data-binary @- http://127.0.0.1:8765/api/hook >/dev/null || true"}]}],
+    "PostToolUse":      [{"hooks": [{"type": "command", "command": "curl -s -m 1 -X POST --data-binary @- http://127.0.0.1:8765/api/hook >/dev/null || true"}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "curl -s -m 1 -X POST --data-binary @- http://127.0.0.1:8765/api/hook >/dev/null || true"}]}],
+    "Stop":             [{"hooks": [{"type": "command", "command": "curl -s -m 1 -X POST --data-binary @- http://127.0.0.1:8765/api/hook >/dev/null || true"}]}],
+    "SessionStart":     [{"hooks": [{"type": "command", "command": "curl -s -m 1 -X POST --data-binary @- http://127.0.0.1:8765/api/hook >/dev/null || true"}]}]
+  }
+}
+```
+
+`POST /api/hook` takes the JSON Claude Code passes to hooks on stdin
+(`session_id`, `hook_event_name`, `cwd`, plus the event's own fields) and
+keeps the latest event per session for 10 minutes. It overrides the
+transcript-derived status only while it is newer than the transcript's last
+line, so an approved permission (which writes a tool result) clears the
+"needs permission" card on its own:
+
+| Event                                   | Card                              |
+|-----------------------------------------|-----------------------------------|
+| `Notification` / `permission_prompt`    | **attention** · needs permission  |
+| `Notification` / `elicitation_dialog`   | **attention** · needs your input  |
+| `PreToolUse` / `AskUserQuestion`        | **attention** · asking you a question |
+| `PreToolUse` / any other tool           | working · running `<command>`, editing `<file>`, … |
+| `PostToolUse`                           | working · thinking                |
+| `UserPromptSubmit`                      | working · working on your prompt  |
+| `Stop`, `Notification` / `idle_prompt`  | idle · waiting for you            |
+| `SessionStart` (not `compact`)          | idle · session started            |
+
+The 1 s timeout and `|| true` keep Claude Code from stalling or reporting an
+error while the dashboard is down. Nothing is required: without hooks the
+cards fall back to what the transcript says.
 
 ## Spotify queue
 
