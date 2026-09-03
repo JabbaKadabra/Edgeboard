@@ -103,3 +103,60 @@ def test_clean_prompt_keeps_code_angle_brackets():
     assert clean_prompt("fix the bug where x < 5 and y > 3 causes a crash") == "fix the bug where x < 5 and y > 3 causes a crash"
     assert clean_prompt("Use generics like List<String> in java") == "Use generics like List<String> in java"
     assert clean_prompt("<system-reminder>\nnoise\n</system-reminder>\nReal") == "Real"
+
+
+def _tool_facts(name, inp, stop_reason="tool_use"):
+    text = "\n".join([user_line("q"), assistant_line("m1", stop_reason=stop_reason, tool=(name, inp))])
+    return session_facts(iter_entries(text))
+
+
+def test_last_tool_bash_hint_is_the_command_truncated():
+    facts = _tool_facts("Bash", {"command": "ls -la   /very/long/path " + "x" * 60, "description": "List"})
+    assert facts.last_tool == "Bash"
+    assert facts.last_tool_hint.startswith("ls -la /very/long/path")
+    assert len(facts.last_tool_hint) <= 40
+
+
+def test_last_tool_file_tools_hint_is_the_basename():
+    assert _tool_facts("Read", {"file_path": "/home/me/proj/README.md"}).last_tool_hint == "README.md"
+    assert _tool_facts("Edit", {"file_path": "/home/me/proj/edgeboard/server.py", "old_string": "a"}).last_tool_hint == "server.py"
+    assert _tool_facts("Write", {"file_path": "notes.txt", "content": "x"}).last_tool_hint == "notes.txt"
+
+
+def test_last_tool_search_and_agent_hints():
+    assert _tool_facts("Grep", {"pattern": "def main", "path": "."}).last_tool_hint == '"def main"'
+    assert _tool_facts("Glob", {"pattern": "**/*.py"}).last_tool_hint == '"**/*.py"'
+    assert _tool_facts("Agent", {"description": "Review the diff", "prompt": "..."}).last_tool_hint == "Review the diff"
+
+
+def test_last_tool_without_recognisable_input_has_no_hint():
+    facts = _tool_facts("WebFetch", {"url": "https://x"})
+    assert facts.last_tool == "WebFetch" and facts.last_tool_hint == ""
+    facts = _tool_facts("Bash", {})
+    assert facts.last_tool == "Bash" and facts.last_tool_hint == ""
+
+
+def test_last_tool_is_cleared_by_a_text_only_reply():
+    text = "\n".join([user_line("q"), assistant_line("m1", stop_reason="tool_use", tool=("Bash", {"command": "ls"})), assistant_line("m2")])
+    facts = session_facts(iter_entries(text))
+    assert facts.last_tool == "" and facts.last_tool_hint == ""
+
+
+def test_last_prompt_keeps_the_most_recent_user_prompt():
+    text = "\n".join(
+        [
+            user_line("First prompt"),
+            assistant_line("m1", stop_reason="tool_use"),
+            user_line(tool_result=True, uuid="tr"),
+            assistant_line("m2"),
+            user_line("<system-reminder>noise</system-reminder>\nSecond prompt\nwith a second line", uuid="u2"),
+        ]
+    )
+    facts = session_facts(iter_entries(text))
+    assert facts.title == "First prompt"
+    assert facts.last_prompt == "Second prompt with a second line"
+
+
+def test_last_prompt_is_truncated_to_300_characters():
+    facts = session_facts(iter_entries(user_line("y" * 400)))
+    assert len(facts.last_prompt) == 300 and facts.last_prompt.endswith("…")

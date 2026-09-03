@@ -243,7 +243,7 @@
       <div class="card-title"></div>
       <div class="card-proj"><b></b><span class="card-branch"></span></div>
       <div class="card-detail"></div>
-      <div class="card-foot"><span class="tag model" hidden></span><span class="tag card-ctx"></span><span class="tag card-msgs"></span></div>`;
+      <div class="card-foot"><span class="tag model" hidden></span><span class="tag card-ctx"></span><span class="tag card-msgs"></span><span class="tag card-agents" hidden></span></div>`;
   const cardNodes = new Map();
   function updateCard(el, s, now) {
     const cls = "card " + s.status;
@@ -259,10 +259,23 @@
     model.hidden = !s.model;
     setText(el.querySelector(".card-ctx"), "ctx " + fmtTokens(s.context_tokens));
     setText(el.querySelector(".card-msgs"), `${s.messages} msgs`);
+    const agents = el.querySelector(".card-agents");
+    agents.hidden = !s.agents;
+    setText(agents, agentsLabel(s));
+    agents.classList.toggle("active", (s.active_agents || 0) > 0);
   }
+  // "2/3 agents" while some subagents are still writing, "3 agents" once they are quiet
+  function agentsLabel(s) {
+    if (!s.agents) return "";
+    return (s.active_agents ? `${s.active_agents}/${s.agents}` : `${s.agents}`) + (s.agents === 1 ? " agent" : " agents");
+  }
+  let lastSessions = [];
   function renderSessions(sessions, summary, now) {
     const box = $("sessions");
-    text("sessions-summary", `${summary.today || 0} today · ${summary.done || 0} done · ${summary.working || 0} working`);
+    lastSessions = sessions;
+    const parts = [`${summary.today || 0} today`, `${summary.done || 0} done`, `${summary.working || 0} working`];
+    if (summary.attention) parts.push(`${summary.attention} need you`);
+    text("sessions-summary", parts.join(" · "));
     $("sessions-empty").hidden = sessions.length > 0;
     const seen = new Set();
     let prev = null;
@@ -283,7 +296,56 @@
     for (const [id, el] of cardNodes) {
       if (!seen.has(id)) { el.remove(); cardNodes.delete(id); }
     }
+    renderOverlay(sessions, now);
   }
+
+  // Tapping a card opens a full-height overlay with everything the card truncates.
+  // It stays live (refilled from each snapshot) and closes on a backdrop tap,
+  // after 20 s, or when the session leaves the snapshot.
+  const OVERLAY_MS = 20 * 1000;
+  let overlayId = null, overlayTimer = 0;
+  function openOverlay(id) {
+    overlayId = id;
+    clearTimeout(overlayTimer);
+    overlayTimer = setTimeout(closeOverlay, OVERLAY_MS);
+    renderOverlay(lastSessions, Date.now());
+  }
+  function closeOverlay() {
+    overlayId = null;
+    clearTimeout(overlayTimer);
+    $("overlay").hidden = true;
+  }
+  function fmtTime(iso) {
+    return iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+  }
+  function renderOverlay(sessions, now) {
+    if (overlayId == null) return;
+    const s = sessions.find((x) => x.id === overlayId);
+    if (!s) { closeOverlay(); return; }
+    const card = $("overlay-card");
+    const cls = "overlay-card " + s.status;
+    if (card.className !== cls) card.className = cls;
+    text("ov-pill", s.status);
+    text("ov-detail", s.detail || "");
+    text("ov-ago", fmtAgo(s.last_activity, now) + " ago");
+    text("ov-title", s.name || "");
+    text("ov-cwd", s.cwd || "");
+    text("ov-branch", s.branch || "–");
+    text("ov-model", s.model || "–");
+    const started = s.started_at ? new Date(s.started_at).getTime() : 0;
+    text("ov-started", started ? `${fmtTime(s.started_at)} · running ${fmtDuration((now - started) / 1000)}` : "–");
+    text("ov-activity", s.last_activity ? `${fmtTime(s.last_activity)} · ${fmtAgo(s.last_activity, now)} ago` : "–");
+    text("ov-msgs", s.messages || 0);
+    text("ov-ctx", fmtTokens(s.context_tokens) + " tokens");
+    text("ov-agents", agentsLabel(s) || "none");
+    text("ov-prompt", s.last_prompt || "–");
+    $("overlay").hidden = false;
+  }
+  $("sessions").addEventListener("click", (ev) => {
+    const card = ev.target.closest(".card");
+    if (card) openOverlay(card.dataset.id);
+  });
+  $("overlay").addEventListener("click", (ev) => { if (ev.target === ev.currentTarget) closeOverlay(); });
   function escapeHtml(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }

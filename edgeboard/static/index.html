@@ -91,6 +91,25 @@
     </div>
   </section>
 </main>
+<!-- session detail: opened by tapping a card, refilled from every snapshot while open -->
+<div id="overlay" class="overlay" hidden>
+  <div id="overlay-card" class="overlay-card">
+    <div class="ov-top"><span id="ov-pill" class="pill"></span><span id="ov-detail" class="ov-detail"></span><span id="ov-ago" class="muted"></span></div>
+    <div id="ov-title" class="ov-title"></div>
+    <dl class="ov-grid">
+      <dt>cwd</dt><dd id="ov-cwd"></dd>
+      <dt>branch</dt><dd id="ov-branch"></dd>
+      <dt>model</dt><dd id="ov-model"></dd>
+      <dt>started</dt><dd id="ov-started"></dd>
+      <dt>last activity</dt><dd id="ov-activity"></dd>
+      <dt>messages</dt><dd id="ov-msgs"></dd>
+      <dt>context</dt><dd id="ov-ctx"></dd>
+      <dt>agents</dt><dd id="ov-agents"></dd>
+    </dl>
+    <div class="ov-prompt-head">last prompt</div>
+    <div id="ov-prompt" class="ov-prompt"></div>
+  </div>
+</div>
 <script src="/static/app.js"></script>
 </body>
 </html>

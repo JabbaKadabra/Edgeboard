@@ -30,7 +30,7 @@ def fill_demo(state: State) -> None:
         "updated_at": now.isoformat(),
     }
 
-    def session(i, name, status, detail, model, ctx, minutes, project="it-system-of-record", branch="master"):
+    def session(i, name, status, detail, model, ctx, minutes, project="it-system-of-record", branch="master", agents=0, active_agents=0):
         return {
             "id": f"demo-{i}",
             "name": name,
@@ -44,15 +44,18 @@ def fill_demo(state: State) -> None:
             "started_at": (now - timedelta(minutes=minutes + 40)).isoformat(),
             "last_activity": (now - timedelta(minutes=minutes)).isoformat(),
             "messages": 20 + i * 7,
+            "agents": agents,
+            "active_agents": active_agents,
+            "last_prompt": f"Review the {name.lower()} once more and list what still blocks Monday's rollout, then start on the fixes in priority order.",
         }
 
     state.sessions = [
-        session(1, "HR Dashboard Monday review", "working", "working on your prompt", "opus-5", 197_000, 0),
-        session(2, "UKG process repo organization", "working", "running tool", "opus-5", 251_000, 2),
-        session(3, "Hazelwood Frost findings memo", "working", "thinking", "fable-5-1", 420_000, 1),
-        session(4, "ITOPS features gap analysis", "idle", "waiting for you", "opus-5", 304_000, 31),
+        session(1, "HR Dashboard Monday review", "attention", "needs permission", "opus-5", 197_000, 0),
+        session(2, "UKG process repo organization", "working", "running pytest tests/ -q", "opus-5", 251_000, 2),
+        session(3, "Hazelwood Frost findings memo", "working", "agents running", "fable-5-1", 420_000, 1, agents=3, active_agents=2),
+        session(4, "ITOPS features gap analysis", "idle", "waiting for you", "opus-5", 304_000, 31, agents=1),
     ][:4]
-    state.sessions_summary = {"today": 21, "done": 5, "working": 3, "idle": 2}
+    state.sessions_summary = {"today": 21, "done": 5, "working": 2, "idle": 2, "attention": 1}
     state.spotify = {
         "running": True,
         "available": True,

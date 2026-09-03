@@ -22,12 +22,15 @@ class State:
         }
     )
     sessions: list[dict] = field(default_factory=list)
-    sessions_summary: dict = field(default_factory=lambda: {"today": 0, "done": 0, "working": 0, "idle": 0})
+    sessions_summary: dict = field(default_factory=lambda: {"today": 0, "done": 0, "working": 0, "idle": 0, "attention": 0})
     spotify: dict = field(default_factory=lambda: {"running": False, "available": True})
     # Upcoming tracks from the Spotify Web API; ``configured`` is False until
     # scripts/spotify_auth.py has written a token file.
     spotify_queue: dict = field(default_factory=lambda: {"configured": False, "tracks": []})
     system: dict | None = None
+    # Latest Claude Code hook event per session id (POST /api/hook), each with a
+    # ``ts`` receipt time. Merged into the session cards; not part of the snapshot.
+    hooks: dict[str, dict] = field(default_factory=dict)
     errors: dict[str, str | None] = field(default_factory=lambda: {"usage": None, "sessions": None, "spotify": None, "system": None})
 
     def snapshot(self) -> dict:

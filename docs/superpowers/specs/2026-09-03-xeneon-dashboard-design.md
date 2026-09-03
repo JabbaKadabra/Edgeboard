@@ -99,8 +99,11 @@ Functions:
 - `usage_events(entries) -> list[UsageEvent]` — de-duplicated
   `(timestamp, model, input, output, cache_read, cache_write)`.
 - `session_facts(entries) -> SessionFacts` — title, cwd, branch, model,
-  last usage, last message kind / stop reason, first and last timestamps,
-  assistant message count.
+  last usage, last message kind / stop reason, the last assistant message's
+  last `tool_use` (name plus a hint from its input, see `tool_hint`: Bash
+  command cut to 40 chars, file basename for Read/Edit/Write, quoted pattern
+  for Grep/Glob, description for Agent), the most recent user prompt (tags
+  stripped, 300 chars), first and last timestamps, assistant message count.
 - `read_tail(path, max_bytes)` — reads only the end of large files for
   status classification; full read only for usage aggregation.
 
@@ -113,6 +116,11 @@ Discovery:
    pid exists in `/proc`.
 2. Transcript files modified today whose session id is not alive are
    shown as *done* (limited to the most recent N, default 12).
+3. Subagent transcripts are the `*.jsonl` files under
+   `<project>/<session-id>/subagents/` (workflow agents one level deeper;
+   `.meta.json` files are not agents). `agents` is their count,
+   `active_agents` how many were written in the last 60 s. A headless
+   session with an active subagent counts as alive.
 
 Status classification from the transcript tail:
 
@@ -120,9 +128,21 @@ Status classification from the transcript tail:
 |---------------------------------------|-------|---------|------------------------|
 | user prompt (text, no tool_result)    | yes   | working | working on your prompt |
 | user tool_result                      | yes   | working | thinking               |
-| assistant, stop_reason = tool_use     | yes   | working | running tool           |
+| assistant, stop_reason = tool_use     | yes   | working | running `<cmd>` / reading `<file>` / editing `<file>` / writing `<file>` / searching `"<pattern>"` / agent: `<description>`; `running <Tool>` without a hint; `running tool` without a tool |
+| assistant, end_turn, active subagent  | yes   | working | agents running         |
 | assistant, stop_reason = end_turn     | yes   | idle    | waiting for you        |
 | any                                   | no    | done    | finished               |
+
+Hook overrides (`POST /api/hook`, see the README): the latest Claude Code
+hook event per session is kept in `State.hooks` with a receipt time and
+applied on top of the table above while the process is alive, the event is
+younger than 10 min (`HOOK_TTL`) and the transcript has not been written
+since it arrived. A permission prompt, an elicitation dialog or a
+`PreToolUse` of `AskUserQuestion` gives the fourth status **attention**
+(sorted before working; pink); other `PreToolUse` events give the tool
+detail above; `PostToolUse` → thinking; `UserPromptSubmit` → working on
+your prompt; `Stop` / idle prompt → waiting for you; `SessionStart` (except
+`compact`) → session started. Malformed bodies get a 400.
 
 Title: the latest `summary` line if any, else the first user prompt's first
 line with `<system-reminder>` and similar tags stripped, truncated to 60
@@ -130,8 +150,16 @@ characters. Project = last path component of `cwd`. Model string is
 shortened (`claude-fable-5-1` → `fable-5-1`). Context tokens = last
 assistant `input + cache_read + cache_creation`.
 
-Summary counters: sessions today, done today, working now. The page gets only
-the first `sessions_shown` (4) sessions after sorting; the counters cover all.
+Summary counters: sessions today, done today, working now, idle, attention.
+The page gets only the first `sessions_shown` (4) sessions after sorting
+(attention, working, idle, done); the counters cover all.
+
+Cards show the detail line and, in the foot, an `N agents` badge (`a/N` in
+amber while `a` are active). Tapping a card opens a full-height overlay
+(markup in `index.html`, refilled from every snapshot) with the full title,
+cwd, branch, model, start time and duration, last activity, message count,
+context tokens, agents and the last prompt; it closes on a backdrop tap,
+after 20 s, or when the session leaves the snapshot.
 
 ### Usage (`claude_usage.py`)
 
@@ -143,7 +171,11 @@ The response is a map of window name → `{utilization, resets_at}`
 top-level key whose value has `utilization` is a window, but only
 `five_hour` ("5-hour") and `seven_day` ("Weekly") are shown; per-model and
 extra-usage windows are dropped as noise. Polled every 60 s; failures
-keep the last good value and mark the source stale.
+keep the last good value and mark the source stale. The endpoint is
+shared with running Claude Code sessions and rate limits bursts, so a
+429 is not an error: the poll interval doubles per consecutive 429 (up
+to 10 min, or Retry-After if longer) and the red error line only
+appears once the panel has been stale for 15 min.
 
 Fallback when no token or the endpoint fails: compute from local
 transcripts — tokens in the rolling 5-hour and 7-day windows, reset time =
