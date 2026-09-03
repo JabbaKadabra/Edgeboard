@@ -69,7 +69,7 @@ If the browser never appears, check `journalctl --user -u xdash-kiosk`.
 | Limits   | Claude's OAuth usage endpoint, using the token in `~/.claude/.credentials.json` (same as `/usage` in Claude Code). Without a token the panel falls back to token counts from local transcripts and is labelled "estimated". |
 | Today / timeline | `~/.claude/projects/*/*.jsonl` transcript files.                                                  |
 | Sessions | `~/.claude/sessions/*.json` (live processes) plus transcripts modified today.                            |
-| Spotify  | `playerctl -p spotify` (MPRIS over D-Bus). Set `XDASH_SPOTIFY_PLAYER` for another player name.           |
+| Spotify  | `playerctl -p spotify` (MPRIS over D-Bus). Set `XDASH_SPOTIFY_PLAYER` for another player name. Spotify's MPRIS position is only refreshed on play/pause/seek, so the progress bar is interpolated client-side and can drift by a few seconds. |
 | System   | `psutil`, `/sys/class/hwmon`, `nvidia-smi` or `/sys/class/drm/card*/device` for AMD.                     |
 
 ## Configuration

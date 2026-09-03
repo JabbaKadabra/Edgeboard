@@ -18,6 +18,7 @@ def test_pick_cpu_temp_prefers_package_sensors():
     del temps["k10temp"]
     assert pick_cpu_temp(temps) == 61.0
     assert pick_cpu_temp({"nvme": [T("Composite", 41.0, None, None)]}) == 41.0
+    assert pick_cpu_temp({"k10temp": [T("Tctl", 0.0, None, None)], "nvme": [T("Composite", 41.0, None, None)]}) == 41.0
     assert pick_cpu_temp({}) is None
 
 

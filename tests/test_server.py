@@ -67,3 +67,34 @@ def test_sse_stream_events():
     payload = json.loads(first.split("data: ", 1)[1])
     assert "sessions" in payload
     assert ": keep-alive\n\n" in rest
+
+
+def test_demo_mode_never_runs_playerctl():
+    calls = []
+
+    def runner(args):
+        calls.append(args)
+        return 0, ""
+
+    client = TestClient(create_app(Settings(demo=True), State(), spotify_runner=runner, start_collectors=False))
+    assert client.post("/api/spotify/next").json()["ok"] is True
+    assert calls == []
+
+
+def test_note_error_keeps_usage_error_while_either_loop_fails():
+    from xdash.server import Collectors
+
+    state = State()
+    c = Collectors(Settings(), state, lambda a: (0, ""))
+    c._note_error("usage", "boom")
+    c._note_error("timeline", None)
+    assert state.errors["usage"] == "boom"
+    c._note_error("usage", None)
+    assert state.errors["usage"] is None
+    c._note_error("timeline", "tl broke")
+    c._note_error("usage", None)
+    assert state.errors["usage"] == "tl broke"
+    c._note_error("timeline", None)
+    assert state.errors["usage"] is None
+    c._note_error("spotify", "gone")
+    assert state.errors["spotify"] == "gone"

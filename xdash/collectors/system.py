@@ -54,7 +54,7 @@ def pick_cpu_temp(temps: dict[str, list]) -> float | None:
         for entry in temps.get(chip, []):
             if not wanted or label(entry) == wanted:
                 value = current(entry)
-                if value is not None:
+                if value is not None and value > 0:
                     return value
     for entries in temps.values():
         for entry in entries:

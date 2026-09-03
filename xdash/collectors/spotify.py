@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from dataclasses import asdict, dataclass
 from typing import Callable
@@ -22,6 +23,7 @@ FORMAT = SEP.join(
 ACTIONS = {"play_pause": "play-pause", "next": "next", "previous": "previous"}
 
 Runner = Callable[[list[str]], tuple[int, str]]
+log = logging.getLogger("xdash.spotify")
 
 
 @dataclass
@@ -48,6 +50,8 @@ def default_runner(args: list[str]) -> tuple[int, str]:
         return 127, ""
     except subprocess.TimeoutExpired:
         return 124, ""
+    if proc.returncode != 0 and proc.stderr:
+        log.debug("%s: %s", " ".join(args), proc.stderr.strip())
     return proc.returncode, proc.stdout
 
 

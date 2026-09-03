@@ -70,16 +70,17 @@ class Collectors:
             await asyncio.sleep(max(0.1, interval - elapsed))
 
     def _note_error(self, name: str, message: str | None) -> None:
-        key = "usage" if name == "timeline" else name
         if message != self._last_error.get(name):
             self._last_error[name] = message
             if message:
                 log.warning("%s collector: %s", name, message)
             else:
                 log.info("%s collector recovered", name)
-        if key == "usage" and message is None and self._last_error.get("usage" if name == "timeline" else "timeline"):
-            return  # the sibling loop still has an error; keep it visible
-        self.state.errors[key] = message
+        if name in ("usage", "timeline"):
+            # Both loops feed the usage panel, so it shows whichever is failing.
+            self.state.errors["usage"] = self._last_error.get("usage") or self._last_error.get("timeline")
+        else:
+            self.state.errors[name] = message
 
     async def _run(self, fn, *args):
         return await asyncio.get_running_loop().run_in_executor(None, fn, *args)
@@ -200,14 +201,17 @@ def create_app(
     async def api_spotify(action: str):
         if action not in spotify.ACTIONS:
             raise HTTPException(status_code=404, detail="unknown action")
+        if settings.demo:
+            # Demo mode never touches a real player.
+            if action == "play_pause":
+                state.spotify["status"] = "Paused" if state.spotify.get("status") == "Playing" else "Playing"
+            return {"ok": True, "spotify": state.spotify}
         loop = asyncio.get_running_loop()
         ok = await loop.run_in_executor(None, spotify.control, runner, settings.spotify_player, action)
-        if not settings.demo:
-            await asyncio.sleep(0.25)  # let the player update before re-reading
-            fresh = await loop.run_in_executor(None, spotify.read_spotify, runner, settings.spotify_player)
-            state.spotify = fresh.to_dict()
-        elif action == "play_pause":
-            state.spotify["status"] = "Paused" if state.spotify.get("status") == "Playing" else "Playing"
+        await asyncio.sleep(0.25)  # let the player update before re-reading
+        fresh = await loop.run_in_executor(None, spotify.read_spotify, runner, settings.spotify_player)
+        # The polling loop may also write state.spotify; a stale overwrite heals on its next tick.
+        state.spotify = fresh.to_dict()
         return {"ok": ok, "spotify": state.spotify}
 
     return app
