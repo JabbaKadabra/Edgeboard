@@ -68,3 +68,19 @@ def test_short_model():
     assert short_model("claude-fable-5-1") == "fable-5-1"
     assert short_model("claude-haiku-4-5-20251001") == "haiku-4-5"
     assert short_model("") == ""
+
+
+def test_read_transcript_large_file_keeps_head_and_tail(tmp_path):
+    from xdash.collectors.claude_transcripts import read_head, read_tail, read_transcript
+
+    path = tmp_path / "s.jsonl"
+    lines = [user_line("First prompt title")] + [assistant_line(f"m{i}", stop_reason="end_turn") for i in range(2000)] + [assistant_line("last", stop_reason="tool_use")]
+    path.write_text("\n".join(lines))
+    text = read_transcript(path, full_limit=1000, head_bytes=2000, tail_bytes=2000)
+    facts = session_facts(iter_entries(text))
+    assert facts.title == "First prompt title"
+    assert facts.last_stop_reason == "tool_use"
+    assert read_head(path, 500).endswith("\n")
+    assert read_tail(path, 500).strip().endswith("}")
+    small = read_transcript(path)
+    assert session_facts(iter_entries(small)).assistant_messages == 2001

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from xdash.collectors.claude_transcripts import SessionFacts, iter_entries, read_tail, session_facts, short_model
+from xdash.collectors.claude_transcripts import SessionFacts, iter_entries, read_transcript, session_facts, short_model
 from xdash.config import Settings
 
 WORKING = "working"
@@ -91,7 +91,7 @@ def _build(session_id: str, path: Path | None, alive: bool, started_ms: int | No
     mtime: datetime | None = None
     if path is not None:
         try:
-            facts = session_facts(iter_entries(read_tail(path)))
+            facts = session_facts(iter_entries(read_transcript(path)))
             mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
         except OSError:
             pass

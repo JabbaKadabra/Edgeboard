@@ -84,6 +84,23 @@ def read_tail(path: Path, max_bytes: int = 256_000) -> str:
         return fh.read().decode("utf-8", errors="replace")
 
 
+def read_head(path: Path, max_bytes: int = 64_000) -> str:
+    """Return the first ``max_bytes`` of a file, cut at a line boundary."""
+    with path.open("rb") as fh:
+        data = fh.read(max_bytes)
+    if len(data) == max_bytes:
+        data = data[: data.rfind(b"\n") + 1]
+    return data.decode("utf-8", errors="replace")
+
+
+def read_transcript(path: Path, full_limit: int = 4_000_000, head_bytes: int = 64_000, tail_bytes: int = 512_000) -> str:
+    """Whole file when small; otherwise its head (for the title) plus its tail (for status)."""
+    size = path.stat().st_size
+    if size <= full_limit:
+        return path.read_text(encoding="utf-8", errors="replace")
+    return read_head(path, head_bytes) + "\n" + read_tail(path, tail_bytes)
+
+
 def short_model(name: str) -> str:
     """``claude-fable-5-1`` -> ``fable-5-1``; drops trailing date stamps."""
     if not name:

@@ -1,0 +1,16 @@
+[Unit]
+Description=xdash kiosk browser on the Xeneon Edge
+After=graphical-session.target xdash.service
+Wants=xdash.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/Dashboard/scripts/kiosk.sh
+# Set to the X offset of the Xeneon Edge in your monitor layout (xrandr / display settings).
+Environment=XDASH_DISPLAY_OFFSET=0,0
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
