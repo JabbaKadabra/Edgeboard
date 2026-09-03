@@ -9,7 +9,9 @@ Type=simple
 ExecStart=%h/Dashboard/scripts/kiosk.sh
 # Set to the X offset of the Xeneon Edge in your monitor layout (xrandr / display settings).
 Environment=XDASH_DISPLAY_OFFSET=0,0
-Restart=on-failure
+# DISPLAY / WAYLAND_DISPLAY must reach the user manager before this unit starts;
+# see README "Run on the Xeneon Edge" (systemctl --user import-environment).
+Restart=always
 RestartSec=5
 
 [Install]

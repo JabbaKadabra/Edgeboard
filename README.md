@@ -19,7 +19,7 @@ Design notes live in `docs/superpowers/specs/`.
 ## Install
 
 ```sh
-sudo pacman -S --needed python uv playerctl chromium
+sudo pacman -S --needed python uv playerctl chromium curl
 git clone <this repo> ~/Dashboard
 cd ~/Dashboard
 uv venv && uv pip install -e .
@@ -48,8 +48,19 @@ Edit `~/.config/systemd/user/xdash-kiosk.service` and set
 `XDASH_DISPLAY_OFFSET` to the X,Y position of the Xeneon Edge in your monitor
 layout (`xrandr --listmonitors` on X11). On Wayland, window placement is up
 to the compositor; add a rule for windows with class `xdash` (Hyprland:
-`windowrulev2 = monitor DP-3, class:^(xdash)$`, `windowrulev2 = fullscreen,
-class:^(xdash)$`).
+`windowrule = monitor DP-3, class:^(xdash)$` and `windowrule = fullscreen,
+class:^(xdash)$`; older Hyprland versions spell it `windowrulev2`).
+
+The kiosk unit starts with `graphical-session.target`, but systemd user
+units do not see `DISPLAY` / `WAYLAND_DISPLAY` unless your session exports
+them. Most desktop environments do this for you; on a bare compositor add
+this to its startup (Hyprland `exec-once`, sway `exec`):
+
+```sh
+systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XDG_CURRENT_DESKTOP
+```
+
+If the browser never appears, check `journalctl --user -u xdash-kiosk`.
 
 ## Data sources
 
@@ -65,16 +76,23 @@ class:^(xdash)$`).
 
 All settings are environment variables with defaults:
 
-| Variable                    | Default                 |
-|-----------------------------|-------------------------|
-| `XDASH_HOST` / `XDASH_PORT` | `127.0.0.1` / `8765`    |
-| `XDASH_CLAUDE_DIR`          | `~/.claude`             |
-| `XDASH_SPOTIFY_PLAYER`      | `spotify`               |
-| `XDASH_USAGE_INTERVAL`      | `60` seconds            |
-| `XDASH_SESSIONS_INTERVAL`   | `2` seconds             |
-| `XDASH_SYSTEM_INTERVAL`     | `1` second              |
-| `XDASH_DONE_SESSIONS_LIMIT` | `12`                    |
-| `XDASH_DEMO`                | `0`                     |
+| Variable                    | Default                                  |
+|-----------------------------|------------------------------------------|
+| `XDASH_HOST` / `XDASH_PORT` | `127.0.0.1` / `8765`                     |
+| `XDASH_CLAUDE_DIR`          | `~/.claude`                              |
+| `XDASH_SPOTIFY_PLAYER`      | `spotify`                                |
+| `XDASH_USAGE_URL`           | `https://api.anthropic.com/api/oauth/usage` |
+| `XDASH_USAGE_INTERVAL`      | `60` seconds                             |
+| `XDASH_TIMELINE_INTERVAL`   | `30` seconds                             |
+| `XDASH_SESSIONS_INTERVAL`   | `2` seconds                              |
+| `XDASH_SPOTIFY_INTERVAL`    | `1` second                               |
+| `XDASH_SYSTEM_INTERVAL`     | `1` second                               |
+| `XDASH_DONE_SESSIONS_LIMIT` | `12`                                     |
+| `XDASH_DEMO`                | `0`                                      |
+
+The server has no authentication and exposes session titles, project paths
+and usage data. Keep `XDASH_HOST` on `127.0.0.1`; if you must reach it from
+another machine, put it behind a reverse proxy that adds auth.
 
 ## Development
 

@@ -138,7 +138,7 @@ OAuth bearer token from `~/.claude/.credentials.json`
 The response is a map of window name → `{utilization, resets_at}`
 (`five_hour`, `seven_day`, `seven_day_opus`, …). Parsing is generic: every
 top-level key whose value has `utilization` becomes a bar; known keys get
-friendly labels, unknown ones are title-cased. Polled every 60 s; failures
+friendly labels, unknown ones are capitalized (`seven_day_fable` → "Fable weekly"). Polled every 60 s; failures
 keep the last good value and mark the source stale.
 
 Fallback when no token or the endpoint fails: compute from local
@@ -229,7 +229,7 @@ while any session is working.
 
 ```
 sudo pacman -S --needed python uv playerctl chromium
-uv sync                      # creates .venv from pyproject
+uv venv && uv pip install -e .   # creates .venv from pyproject
 systemctl --user enable --now xdash.service xdash-kiosk.service
 ```
 
