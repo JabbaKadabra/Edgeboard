@@ -112,6 +112,36 @@
     void svg.getBoundingClientRect();  // restart the animation if it is still running
     svg.classList.add("flash");
   }
+  // Synthesized WebAudio chimes, one per phase entered: a blip to start, two rising notes for the
+  // break, three falling notes when the loop is done. The context is created on the first tap (a
+  // user gesture) so the automatic transitions at zero can sound; kiosk.sh also lifts the autoplay policy.
+  const CHIMES = {
+    focus: [[880, 0, 0.1]],
+    break: [[660, 0, 0.14], [990, 0.16, 0.24]],
+    off: [[990, 0, 0.14], [784, 0.16, 0.14], [523, 0.32, 0.36]],
+  };
+  let audio = null;
+  function unlockAudio() {
+    if (audio) return;
+    try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { audio = null; }
+  }
+  function chime(phase) {
+    if (!audio) return;
+    const play = () => {
+      const t0 = audio.currentTime + 0.02;
+      (CHIMES[phase] || []).forEach(([freq, at, dur]) => {
+        const osc = audio.createOscillator(), gain = audio.createGain();
+        osc.type = "triangle"; osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, t0 + at);
+        gain.gain.linearRampToValueAtTime(0.25, t0 + at + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + at + dur);
+        osc.connect(gain).connect(audio.destination);
+        osc.start(t0 + at); osc.stop(t0 + at + dur + 0.05);
+      });
+    };
+    if (audio.state === "running") play();
+    else audio.resume().then(play).catch(() => {});
+  }
   function advancePomo() {
     const from = pomo.phase;
     if (from === "off") { pomo.phase = "focus"; pomo.endsAt = Date.now() + POMO_FOCUS_MS; }
@@ -120,6 +150,7 @@
     if (pomo.phase === "break") drawMascot($("mascot"), COFFEE);
     else if (from === "break") drawMascot($("mascot"), MASCOT, EYES);
     if (from !== "off") flashMascot();
+    chime(pomo.phase);
     tickPomo();
   }
   function tickPomo() {
@@ -132,7 +163,7 @@
     el.classList.toggle("break", pomo.phase === "break");
     el.hidden = false;
   }
-  $("mascot-wrap").addEventListener("click", advancePomo);
+  $("mascot-wrap").addEventListener("click", () => { unlockAudio(); advancePomo(); });
   $("mascot").addEventListener("animationend", (ev) => { if (ev.animationName === "flash") ev.target.classList.remove("flash"); });
 
   tickClock();

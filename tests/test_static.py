@@ -84,3 +84,15 @@ def test_mascot_is_pomodoro_tap_target_not_bouncing():
     pomo_px = int(re.search(r"^\.pomo\s*\{[^}]*font-size:\s*(\d+)px", css, re.M).group(1))
     clock_px = int(re.search(r"^\.clock\s*\{[^}]*font-size:\s*(\d+)px", css, re.M).group(1))
     assert pomo_px < clock_px
+
+
+def test_pomodoro_chimes_on_phase_change():
+    js = (STATIC / "app.js").read_text()
+    pomo_js = js.split("// ---------- pomodoro ----------")[1].split("// ----------")[0]
+    # transitions play a synthesized WebAudio chime (no asset, the kiosk may be offline);
+    # the context is unlocked on the first tap so the automatic transitions at zero can sound
+    assert "AudioContext" in pomo_js and "resume()" in pomo_js
+    assert "chime(" in pomo_js.split("function advancePomo")[1]
+    # the kiosk restarts without any tap, so Chromium must not require a gesture for audio
+    kiosk = (ROOT / "scripts" / "kiosk.sh").read_text()
+    assert "--autoplay-policy=no-user-gesture-required" in kiosk
