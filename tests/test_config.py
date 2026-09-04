@@ -72,3 +72,25 @@ def test_alert_flags_default_off():
     assert s.alert_sound is False and s.alert_notify is False
     s = Settings.from_env({"EDGEBOARD_ALERT_SOUND": "1", "EDGEBOARD_ALERT_NOTIFY": "yes"}, env_file=NO_FILE)
     assert s.alert_sound is True and s.alert_notify is True
+
+
+def test_presets_parse_label_text_pairs():
+    from edgeboard.config import DEFAULT_PRESETS, parse_presets
+
+    assert parse_presets("continue=Carry on with the plan|tests=Run the tests, fix what fails") == (
+        ("continue", "Carry on with the plan"),
+        ("tests", "Run the tests, fix what fails"),
+    )
+    assert parse_presets(" go = a=b | nope | =x | y= ") == (("go", "a=b"),)  # first "=" splits; blanks dropped
+    assert parse_presets("") == DEFAULT_PRESETS
+    assert parse_presets("|") == DEFAULT_PRESETS
+    assert len(DEFAULT_PRESETS) >= 3 and all(label and text for label, text in DEFAULT_PRESETS)
+
+
+def test_presets_and_answer_wait_from_env():
+    s = Settings.from_env({"EDGEBOARD_PRESETS": "a=b", "EDGEBOARD_ANSWER_WAIT": "30"}, env_file=NO_FILE)
+    assert s.presets == (("a", "b"),) and s.answer_wait == 30.0
+    d = Settings.from_env({}, env_file=NO_FILE)
+    from edgeboard.config import DEFAULT_PRESETS
+
+    assert d.presets == DEFAULT_PRESETS and d.answer_wait == 90.0

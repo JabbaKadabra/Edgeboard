@@ -17,10 +17,12 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
+from edgeboard.answers import Answers
 from edgeboard.collectors import claude_usage, spotify, spotify_queue
-from edgeboard.collectors.claude_sessions import ATTENTION, attention_transitions, collect_sessions, os_pid_alive, prune_hooks
+from edgeboard.collectors.claude_inbox import find_inbox, send_message
+from edgeboard.collectors.claude_sessions import ATTENTION, IDLE, WORKING, attention_transitions, collect_sessions, os_pid_alive, prune_hooks
 from edgeboard.collectors.system import SystemSampler
 from edgeboard.config import Settings
 from edgeboard.demo import fill_demo
@@ -42,6 +44,34 @@ class SkipBody(BaseModel):
     index: int = Field(ge=0, lt=spotify_queue.QUEUE_LIMIT)
 
 
+class AnswerBody(BaseModel):
+    """Either ``answers`` (question text -> chosen label or free text) or ``pass`` (answer in the terminal)."""
+
+    tool_use_id: str = Field(min_length=1)
+    answers: dict[str, str] | None = None
+    pass_: bool = Field(default=False, alias="pass")
+
+    @model_validator(mode="after")
+    def _one_of(self) -> "AnswerBody":
+        if bool(self.answers) == self.pass_:
+            raise ValueError("give either answers or pass")
+        return self
+
+
+class SendBody(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+    @model_validator(mode="after")
+    def _strip(self) -> "SendBody":
+        self.text = self.text.strip()
+        if not self.text:
+            raise ValueError("text is blank")
+        return self
+
+
+ANSWER_WAIT_MAX = 30.0  # longest a single GET /api/answer long-poll may hang
+
+
 # A rate-limited usage poll keeps the last value and backs off; only once the
 # panel has been stale this long is it worth a red error under the clock.
 USAGE_STALE_AFTER = 15 * 60
@@ -61,11 +91,12 @@ def desktop_notify(title: str, body: str) -> None:
 class Collectors:
     """Background loops that keep ``State`` fresh. One task per source."""
 
-    def __init__(self, settings: Settings, state: State, spotify_runner: spotify.Runner, notifier: Notifier = desktop_notify):
+    def __init__(self, settings: Settings, state: State, spotify_runner: spotify.Runner, notifier: Notifier = desktop_notify, answers: Answers | None = None):
         self.settings = settings
         self.state = state
         self.spotify_runner = spotify_runner
         self.notifier = notifier
+        self.answers = answers or Answers(state.hooks)
         self._statuses: dict[str, str] = {}  # session id -> status of the previous round, for attention alerts
         self.sampler: SystemSampler | None = None
         self._tasks: list[asyncio.Task] = []
@@ -167,7 +198,10 @@ class Collectors:
 
     async def _sessions(self) -> None:
         # Copy the hook map for the executor thread; the hook route writes it from the loop.
-        self.state.hooks = prune_hooks(self.state.hooks, time.time())
+        # Pruning keeps the dict object: the answer registry flags questions in it.
+        for sid in set(self.state.hooks) - set(prune_hooks(self.state.hooks, time.time())):
+            del self.state.hooks[sid]
+        self.answers.expire()
         sessions, summary = await self._run(collect_sessions, self.settings, None, os_pid_alive, dict(self.state.hooks))
         self.state.sessions = [s.to_dict() for s in sessions]
         self.state.sessions_summary = summary
@@ -273,7 +307,8 @@ def create_app(
     if settings.demo:
         fill_demo(state)
         start_collectors = False
-    collectors = Collectors(settings, state, runner)
+    answers = Answers(state.hooks)
+    collectors = Collectors(settings, state, runner, answers=answers)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -288,7 +323,8 @@ def create_app(
     app = FastAPI(title="edgeboard", lifespan=lifespan)
     app.state.settings = settings
     app.state.dashboard = state
-    state.settings = {"alert_sound": settings.alert_sound}
+    app.state.answers = answers
+    state.settings = {"alert_sound": settings.alert_sound, "presets": [{"label": label, "text": text} for label, text in settings.presets]}
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/")
@@ -322,6 +358,49 @@ def create_app(
         if not isinstance(sid, str) or not sid or not isinstance(event, str) or not event:
             raise HTTPException(status_code=400, detail="session_id and hook_event_name are required")
         state.hooks[sid] = {**body, "ts": time.time()}
+        if event == "PreToolUse" and body.get("tool_name") == "AskUserQuestion" and isinstance(body.get("tool_use_id"), str) and body["tool_use_id"]:
+            answers.open(body["tool_use_id"], sid)
+        return {"ok": True}
+
+    # The hook script long-polls here for the panel's answer (scripts/edgeboard-hook.py).
+    @app.get("/api/answer/{tool_use_id}")
+    async def api_answer(tool_use_id: str, wait: float = 0.0):
+        if answers.session_of(tool_use_id) is None:
+            raise HTTPException(status_code=404, detail="no such pending question")
+        result = await answers.wait(tool_use_id, min(max(wait, 0.0), ANSWER_WAIT_MAX))
+        if result is None:
+            return {"status": "pending"}
+        if result.get("pass"):
+            return {"status": "pass"}
+        return {"status": "answered", "answers": result["answers"]}
+
+    @app.post("/api/sessions/{session_id}/answer")
+    async def api_session_answer(session_id: str, body: AnswerBody):
+        result = {"pass": True} if body.pass_ else {"answers": body.answers}
+        if settings.demo:
+            return _demo_answer(state, session_id, body.tool_use_id)
+        if answers.session_of(body.tool_use_id) != session_id:
+            raise HTTPException(status_code=404, detail="no such pending question")
+        if answers.is_abandoned(body.tool_use_id):
+            raise HTTPException(status_code=409, detail="the hook stopped waiting; answer in the terminal")
+        if not answers.resolve(body.tool_use_id, session_id, result):
+            raise HTTPException(status_code=409, detail="already answered")
+        return {"ok": True}
+
+    @app.post("/api/sessions/{session_id}/send")
+    async def api_session_send(session_id: str, body: SendBody):
+        if settings.demo:
+            return _demo_send(state, session_id, body.text)
+        loop = asyncio.get_running_loop()
+        inbox = await loop.run_in_executor(None, find_inbox, settings.claude_dir, session_id)
+        if inbox is None:
+            raise HTTPException(status_code=404, detail="session has no inbox (gone, headless or Claude Code < 2.1.224)")
+        try:
+            await loop.run_in_executor(None, send_message, inbox, body.text)
+        except OSError as exc:
+            raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}")
+        # Until the transcript shows the new turn, let the card say what just happened.
+        state.hooks[session_id] = {"session_id": session_id, "hook_event_name": "UserPromptSubmit", "prompt": body.text, "ts": time.time()}
         return {"ok": True}
 
     async def _spotify_command(fn, *args) -> dict:
@@ -376,6 +455,29 @@ def create_app(
         return await _spotify_command(spotify.control, action)
 
     return app
+
+
+def _demo_session(state: State, session_id: str) -> dict:
+    for s in state.sessions:
+        if s.get("id") == session_id:
+            return s
+    raise HTTPException(status_code=404, detail="no such session")
+
+
+def _demo_answer(state: State, session_id: str, tool_use_id: str) -> dict:
+    s = _demo_session(state, session_id)
+    if not s.get("question") or s["question"].get("tool_use_id") != tool_use_id:
+        raise HTTPException(status_code=404, detail="no such pending question")
+    s.update({"question": None, "status": WORKING, "detail": "thinking", "waiting_since": None})
+    return {"ok": True}
+
+
+def _demo_send(state: State, session_id: str, text: str) -> dict:
+    s = _demo_session(state, session_id)
+    if not s.get("can_send"):
+        raise HTTPException(status_code=404, detail="session has no inbox")
+    s.update({"status": WORKING, "detail": "working on your prompt", "last_prompt": text, "waiting_since": None})
+    return {"ok": True}
 
 
 def main() -> None:
