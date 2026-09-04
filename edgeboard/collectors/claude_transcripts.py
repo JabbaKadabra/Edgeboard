@@ -57,6 +57,9 @@ class SessionFacts:
     last_prompt: str = ""  # most recent user prompt, cleaned, up to PROMPT_MAX chars
     last_reply: str = ""  # most recent assistant text block, cleaned, up to PROMPT_MAX chars
     permission_mode: str = ""  # ``permissionMode`` of the latest user prompt (plan, default, acceptEdits, ...)
+    # An AskUserQuestion Claude is waiting on (see ``flatten_question``): set by the
+    # tool_use block, cleared by the tool_result that answers it.
+    question: dict | None = None
 
 
 def parse_ts(value: str | None) -> datetime | None:
@@ -201,6 +204,31 @@ def tool_hint(name: str, tool_input) -> str:
     return ""
 
 
+def flatten_question(tool_use_id: str, tool_input) -> dict | None:
+    """An AskUserQuestion input flattened for the page.
+
+    ``{tool_use_id, title, questions: [{question, header, options: [label, …], multi}]}``,
+    or None without a ``tool_use_id`` or a usable ``questions`` list.
+    """
+    if not isinstance(tool_use_id, str) or not tool_use_id or not isinstance(tool_input, dict):
+        return None
+    raw = tool_input.get("questions")
+    if not isinstance(raw, list):
+        return None
+    questions = []
+    for q in raw:
+        if not isinstance(q, dict) or not isinstance(q.get("question"), str) or not q["question"]:
+            continue
+        options = q.get("options") if isinstance(q.get("options"), list) else []
+        labels = [o["label"] for o in options if isinstance(o, dict) and isinstance(o.get("label"), str) and o["label"]]
+        header = q.get("header") if isinstance(q.get("header"), str) else ""
+        questions.append({"question": q["question"], "header": header, "options": labels, "multi": bool(q.get("multiSelect"))})
+    if not questions:
+        return None
+    title = tool_input.get("title") if isinstance(tool_input.get("title"), str) else ""
+    return {"tool_use_id": tool_use_id, "title": title, "questions": questions}
+
+
 def _message(entry: dict) -> dict:
     """The ``message`` object of an entry, or ``{}`` when missing or mis-shaped."""
     message = entry.get("message")
@@ -329,6 +357,7 @@ class SessionParser:
                 if kind == "user":
                     facts.last_kind = _user_kind(entry)
                     facts.last_stop_reason = ""
+                    facts.question = None  # the tool_result answers it (or the user moved on)
                     if facts.last_kind == "user_prompt":
                         if isinstance(entry.get("permissionMode"), str) and entry["permissionMode"]:
                             facts.permission_mode = entry["permissionMode"]
@@ -340,10 +369,13 @@ class SessionParser:
                     facts.last_kind = "assistant"
                     facts.last_stop_reason = str(message.get("stop_reason") or "")
                     facts.last_tool, facts.last_tool_hint = "", ""
+                    facts.question = None
                     for block in _content_blocks(message):
                         if block.get("type") == "tool_use" and isinstance(block.get("name"), str):
                             facts.last_tool = block["name"]
                             facts.last_tool_hint = tool_hint(block["name"], block.get("input"))
+                            if block["name"] == "AskUserQuestion":
+                                facts.question = flatten_question(block.get("id"), block.get("input"))
                         # Streaming writes one content block per line, so only a
                         # non-empty text block replaces the reply.
                         elif block.get("type") == "text" and isinstance(block.get("text"), str):

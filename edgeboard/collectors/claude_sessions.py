@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
-from edgeboard.collectors.claude_transcripts import PROMPT_MAX, SessionFacts, SessionParser, clean_text, iter_entries, read_new_lines, read_transcript_bytes, short_model, tool_hint
+from edgeboard.collectors.claude_transcripts import PROMPT_MAX, SessionFacts, SessionParser, clean_text, flatten_question, iter_entries, read_new_lines, read_transcript_bytes, short_model, tool_hint
 from edgeboard.config import Settings
 
 ATTENTION = "attention"  # Claude is blocked on the user: a permission prompt or a question
@@ -82,6 +82,8 @@ def classify(facts: SessionFacts, alive: bool, active_agents: int = 0) -> tuple[
     if facts.last_kind == "tool_result":
         return WORKING, "thinking"
     if facts.last_kind == "assistant" and facts.last_stop_reason == "tool_use":
+        if facts.last_tool == "AskUserQuestion":
+            return ATTENTION, "answer in the terminal"  # only a hook (see hook_override) lets the panel answer
         return WORKING, tool_detail(facts.last_tool, facts.last_tool_hint)
     if active_agents:
         return WORKING, "agents running"  # the main transcript waits on a subagent
@@ -159,24 +161,7 @@ def question_from_hook(hook: dict | None) -> dict | None:
         return None
     if hook.get("question_state") in ("answered", "abandoned"):
         return None
-    tool_use_id, tool_input = hook.get("tool_use_id"), hook.get("tool_input")
-    if not isinstance(tool_use_id, str) or not tool_use_id or not isinstance(tool_input, dict):
-        return None
-    raw = tool_input.get("questions")
-    if not isinstance(raw, list):
-        return None
-    questions = []
-    for q in raw:
-        if not isinstance(q, dict) or not isinstance(q.get("question"), str) or not q["question"]:
-            continue
-        options = q.get("options") if isinstance(q.get("options"), list) else []
-        labels = [o["label"] for o in options if isinstance(o, dict) and isinstance(o.get("label"), str) and o["label"]]
-        header = q.get("header") if isinstance(q.get("header"), str) else ""
-        questions.append({"question": q["question"], "header": header, "options": labels, "multi": bool(q.get("multiSelect"))})
-    if not questions:
-        return None
-    title = tool_input.get("title") if isinstance(tool_input.get("title"), str) else ""
-    return {"tool_use_id": tool_use_id, "title": title, "questions": questions}
+    return flatten_question(hook.get("tool_use_id"), hook.get("tool_input"))
 
 
 def attention_transitions(previous: dict[str, str], sessions: Iterable[dict]) -> list[dict]:
@@ -345,6 +330,13 @@ def _build(
     waiting_since = None
     if status in (IDLE, ATTENTION):
         waiting_since = _iso(datetime.fromtimestamp(float(hook["ts"]), tz=timezone.utc)) if fresh else last_activity
+    # A question is answerable from the panel only while the hook script waits for
+    # it; the transcript's own copy is shown for reading (answer in the terminal).
+    question = question_from_hook(hook) if fresh else None
+    if question is not None:
+        question = {**question, "answerable": True}
+    elif status == ATTENTION and facts.question is not None:
+        question = {**facts.question, "answerable": False}
     return Session(
         id=session_id,
         name=facts.title or (Path(cwd).name if cwd else "session"),
@@ -366,7 +358,7 @@ def _build(
         session_name=session_name,
         can_send=bool(alive and not headless and socket_path and os.path.exists(socket_path)),
         waiting_since=waiting_since,
-        question=question_from_hook(hook) if fresh else None,
+        question=question,
     )
 
 

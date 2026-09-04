@@ -58,6 +58,7 @@ def fill_demo(state: State) -> None:
 
     question = {
         "tool_use_id": "demo-toolu-1",
+        "answerable": True,  # as if the hook script were waiting on /api/answer
         "title": "Rollout",
         "questions": [
             {"question": "Which environment should the Monday rollout target first?", "header": "Target", "options": ["staging", "prod", "both"], "multi": False},

@@ -319,12 +319,13 @@
   const cardNodes = new Map();
   // Action row of a card (and the preset row of the overlay). Rebuilt only when
   // its key changes so a tap never lands on a freshly re-created button.
-  //   attention + question: the options of a single-choice question (or one "answer…"
-  //   button that opens the overlay for multi-choice / several questions) + "terminal"
+  //   attention + answerable question: the options of a single-choice question (or one
+  //   "answer…" button that opens the overlay for multi-choice / several questions) + "terminal";
+  //   a question only read from the transcript (no hook waiting) gets no buttons
   //   idle + can_send: the first ``limit`` presets
   function actionButtons(s, presets, limit) {
     const buttons = [];
-    if (s.status === "attention" && s.question) {
+    if (s.status === "attention" && s.question && s.question.answerable) {
       const qs = s.question.questions || [];
       if (qs.length === 1 && !qs[0].multi && qs[0].options.length) {
         qs[0].options.forEach((label) => buttons.push({ text: label, act: "answer", q: qs[0].question, label }));
@@ -482,10 +483,12 @@
   }
   // The full question set: every question with its options as toggles (multi-choice
   // allowed), sent together. Rebuilt when the question changes, so selections survive snapshots.
+  // A question nothing waits for (read from the transcript, or the hook gave up) is
+  // listed read-only with a note to answer it in the terminal.
   function renderQuestions(s) {
     const box = $("ov-questions");
     const q = s.status === "attention" ? s.question : null;
-    const key = q ? q.tool_use_id : "";
+    const key = q ? `${q.tool_use_id}:${q.answerable ? 1 : 0}` : "";
     box.hidden = !q;
     if (box.dataset.key === key) return;
     box.dataset.key = key;
@@ -499,18 +502,19 @@
       wrap.innerHTML = `<div class="ov-q-text">${item.header ? `<b>${escapeHtml(item.header)}</b>` : ""}${escapeHtml(item.question)}</div><div class="ov-q-options"></div>`;
       const opts = wrap.querySelector(".ov-q-options");
       item.options.forEach((label) => {
-        const btn = document.createElement("button");
-        btn.className = "act";
-        btn.textContent = label;
-        btn.dataset.act = "toggle";
-        btn.dataset.label = label;
-        opts.appendChild(btn);
+        const opt = document.createElement(q.answerable ? "button" : "span");
+        opt.className = q.answerable ? "act" : "ov-q-option";
+        opt.textContent = label;
+        if (q.answerable) { opt.dataset.act = "toggle"; opt.dataset.label = label; }
+        opts.appendChild(opt);
       });
       box.appendChild(wrap);
     });
     const submit = document.createElement("div");
     submit.className = "ov-q-submit";
-    submit.innerHTML = `<button class="act" data-act="answer-all">send answers</button><button class="act terminal" data-act="pass">answer in the terminal</button>`;
+    submit.innerHTML = q.answerable
+      ? `<button class="act" data-act="answer-all">send answers</button><button class="act terminal" data-act="pass">answer in the terminal</button>`
+      : `<span class="muted">the panel cannot answer this one: answer it in the terminal (install the hooks, see the README)</span>`;
     box.appendChild(submit);
   }
   // Answers from the overlay: the selected labels per question (comma-joined for
@@ -565,7 +569,7 @@
     else if (act === "compose") {
       const typed = $("ov-input").value.trim();
       if (!typed) return;
-      if (s.status === "attention" && s.question) { action = "answer"; body = { tool_use_id: s.question.tool_use_id, answers: collectAnswers(s) }; }
+      if (s.status === "attention" && s.question && s.question.answerable) { action = "answer"; body = { tool_use_id: s.question.tool_use_id, answers: collectAnswers(s) }; }
       else { action = "send"; body = { text: typed }; }
     }
     else return;

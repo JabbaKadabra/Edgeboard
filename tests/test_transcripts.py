@@ -207,3 +207,41 @@ def test_usage_parser_is_incremental_across_feeds():
     parser.feed(iter_entries("\n".join([assistant_line("msg_1", output_tokens=50, when=ts(0.9)), assistant_line("msg_2", output_tokens=7, when=ts(0.5))])))
     assert [e.output for e in parser.events] == [50, 7]
     assert usage_events(iter_entries("\n".join([assistant_line("msg_1", output_tokens=5), assistant_line("msg_1", output_tokens=50)])))[0].output == 50
+
+
+# ---------- pending AskUserQuestion from the transcript ----------
+_ASK = {
+    "title": "Deploy",
+    "questions": [
+        {"question": "Deploy where?", "header": "Target", "options": [{"label": "staging", "description": "s"}, {"label": "prod"}], "multiSelect": False},
+        {"question": "Notify?", "options": [{"label": "slack"}, {"label": "mail"}], "multiSelect": True},
+    ],
+}
+
+
+def test_flatten_question_keeps_labels_headers_and_multi():
+    from edgeboard.collectors.claude_transcripts import flatten_question
+
+    assert flatten_question("toolu_9", _ASK) == {
+        "tool_use_id": "toolu_9",
+        "title": "Deploy",
+        "questions": [
+            {"question": "Deploy where?", "header": "Target", "options": ["staging", "prod"], "multi": False},
+            {"question": "Notify?", "header": "", "options": ["slack", "mail"], "multi": True},
+        ],
+    }
+    assert flatten_question("", _ASK) is None
+    assert flatten_question("toolu_9", {"questions": "nope"}) is None
+    assert flatten_question("toolu_9", {"questions": [{"question": ""}]}) is None
+
+
+def test_session_facts_question_is_pending_until_the_tool_result():
+    asked = "\n".join([user_line("q"), assistant_line("m1", stop_reason="tool_use", text=None, tool=("AskUserQuestion", _ASK))])
+    facts = session_facts(iter_entries(asked))
+    assert facts.last_tool == "AskUserQuestion"
+    assert facts.question["tool_use_id"] == "toolu_1"
+    assert facts.question["questions"][0]["options"] == ["staging", "prod"]
+    answered = asked + "\n" + user_line(tool_result=True, uuid="tr")
+    assert session_facts(iter_entries(answered)).question is None
+    moved_on = asked + "\n" + assistant_line("m2", text="ok")
+    assert session_facts(iter_entries(moved_on)).question is None

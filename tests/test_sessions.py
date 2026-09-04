@@ -488,3 +488,43 @@ def test_waiting_since_is_only_set_while_idle_or_attention(tmp_path):
     idle = collect_sessions(settings, pid_alive=lambda pid: pid == 4242)[0][0]
     assert idle.status == IDLE and idle.waiting_since == idle.last_activity
     assert idle.permission_mode == "acceptEdits"
+
+
+# ---------- questions seen in the transcript (no hook needed to show them) ----------
+def test_classify_pending_question_needs_attention():
+    from edgeboard.collectors.claude_sessions import ATTENTION
+
+    assert classify(_tool("AskUserQuestion"), True) == (ATTENTION, "answer in the terminal")
+    assert classify(_tool("AskUserQuestion"), False) == (DONE, "finished")
+
+
+def _asking_dir(tmp_path: Path) -> Settings:
+    settings = _live_dir(tmp_path)
+    transcript = settings.claude_dir / "projects" / "-home-me-proj" / f"{SESSION}.jsonl"
+    transcript.write_text("\n".join([user_line("Deploy it"), assistant_line("m1", stop_reason="tool_use", text=None, tool=("AskUserQuestion", _ASK))]))
+    return settings
+
+
+def test_transcript_question_shows_but_only_a_hook_makes_it_answerable(tmp_path):
+    from edgeboard.collectors.claude_sessions import ATTENTION
+
+    settings = _asking_dir(tmp_path)
+    now = datetime.now(timezone.utc)
+    live = collect_sessions(settings, now, pid_alive=lambda pid: pid == 4242)[0][0]
+    assert (live.status, live.detail) == (ATTENTION, "answer in the terminal")
+    assert live.question["tool_use_id"] == "toolu_1" and live.question["answerable"] is False
+    assert live.question["questions"][0]["question"] == "Deploy where?"
+    hooks = {SESSION: _hook("PreToolUse", now.timestamp(), tool_name="AskUserQuestion", tool_use_id="toolu_1", tool_input=_ASK)}
+    live = collect_sessions(settings, now, pid_alive=lambda pid: pid == 4242, hooks=hooks)[0][0]
+    assert (live.status, live.detail) == (ATTENTION, "asking you a question")
+    assert live.question["answerable"] is True
+    abandoned = {SESSION: {**hooks[SESSION], "question_state": "abandoned"}}
+    live = collect_sessions(settings, now, pid_alive=lambda pid: pid == 4242, hooks=abandoned)[0][0]
+    assert (live.status, live.detail, live.question["answerable"]) == (ATTENTION, "answer in the terminal", False)
+
+
+def test_headless_transcript_with_a_question_is_finished(tmp_path):
+    settings = _asking_dir(tmp_path)
+    (settings.claude_dir / "sessions" / "4242.json").unlink()
+    live = collect_sessions(settings, datetime.now(timezone.utc), pid_alive=lambda pid: False)[0][0]
+    assert (live.status, live.question) == (DONE, None)

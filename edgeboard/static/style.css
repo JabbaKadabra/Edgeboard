@@ -265,6 +265,8 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 .ov-q-text b { color: var(--text); font-weight: 700; margin-right: 10px; }
 .ov-q-options, .ov-q-submit, .ov-presets, .ov-compose { display: flex; flex-wrap: wrap; gap: 8px; }
 .ov-q-options button.sel { background: var(--pink); color: var(--bg); border-color: var(--pink); }
+/* read-only options of a question the panel cannot answer (no hook waiting for it) */
+.ov-q-option { padding: 10px 16px; font-size: 17px; color: var(--muted); border: 1px dashed var(--border); }
 .ov-actions { display: flex; flex-direction: column; gap: 10px; border-top: 1px dashed var(--border); padding-top: 12px; flex: none; }
 .ov-compose { flex-wrap: nowrap; }
 .ov-compose input {
