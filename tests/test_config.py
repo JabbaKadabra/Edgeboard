@@ -100,3 +100,10 @@ def test_context_window_settings():
     assert s.context_window == 1_000_000 and s.context_warn_pct == 70
     d = Settings.from_env({}, env_file=NO_FILE)
     assert d.context_window == 200_000 and d.context_warn_pct == 80
+
+
+def test_git_settings():
+    s = Settings.from_env({"EDGEBOARD_GIT_REPOS": "~/dotfiles:/srv/blog: ", "EDGEBOARD_GIT_INTERVAL": "15"}, env_file=NO_FILE)
+    assert s.git_repos == (str(Path.home() / "dotfiles"), "/srv/blog") and s.git_interval == 15.0
+    d = Settings.from_env({}, env_file=NO_FILE)
+    assert d.git_repos == () and d.git_interval == 30.0

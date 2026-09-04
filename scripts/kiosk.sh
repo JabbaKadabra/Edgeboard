@@ -6,6 +6,8 @@
 #   EDGEBOARD_DISPLAY_OFFSET  "X,Y" position of the Xeneon Edge in the desktop layout (default 0,0)
 #   EDGEBOARD_DISPLAY_SIZE    "W,H" panel size (default 2560,720)
 #   EDGEBOARD_BROWSER         browser binary (default: chromium, then google-chrome-stable, brave)
+#   EDGEBOARD_KIOSK_DEBUG_PORT  open Chromium's DevTools protocol on this loopback port (default: off);
+#                             tests/test_kiosk.py drives the live panel through it (pytest -m kiosk)
 #
 # Under X11 the --window-position flag places the window on the right output.
 # Under Wayland compositors window placement is up to the compositor; add a
@@ -19,6 +21,7 @@ URL="${EDGEBOARD_URL:-http://127.0.0.1:8765}"
 OFFSET="${EDGEBOARD_DISPLAY_OFFSET:-0,0}"
 SIZE="${EDGEBOARD_DISPLAY_SIZE:-2560,720}"
 PROFILE="${XDG_STATE_HOME:-$HOME/.local/state}/edgeboard-kiosk"
+DEBUG_PORT="${EDGEBOARD_KIOSK_DEBUG_PORT:-}"
 
 pick_browser() {
   if [[ -n "${EDGEBOARD_BROWSER:-}" ]]; then echo "$EDGEBOARD_BROWSER"; return; fi
@@ -56,8 +59,14 @@ done
 # ?kiosk=1 makes the page hide the mouse cursor (add ?debug to get it back).
 case "$URL" in *\?*) KIOSK_URL="$URL&kiosk=1" ;; *) KIOSK_URL="$URL?kiosk=1" ;; esac
 
+# The DevTools port has no auth: loopback only, and only when asked for.
+DEBUG_FLAGS=()
+if [[ -n "$DEBUG_PORT" ]]; then
+  DEBUG_FLAGS=(--remote-debugging-port="$DEBUG_PORT" --remote-debugging-address=127.0.0.1)
+fi
+
 exec "$BROWSER" \
-  --kiosk "$KIOSK_URL" \
+  --kiosk "$KIOSK_URL" "${DEBUG_FLAGS[@]}" \
   --class=edgeboard --user-data-dir="$PROFILE" \
   --window-position="$OFFSET" --window-size="$SIZE" \
   --touch-events=enabled --disable-pinch --enable-features=OverlayScrollbar \

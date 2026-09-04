@@ -116,12 +116,18 @@
   drawClaude(true);
 
   // ---------- clock ----------
+  // hour:minute big, the seconds and (in 12 h locales) the meridiem stacked beside them,
+  // and the date split into the weekday and the rest so the two can be coloured apart
   function tickClock() {
     const d = new Date();
-    const hm = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).replace(/\s?[AP]M$/i, "");
-    text("clock-hm", hm);
+    const time = new Intl.DateTimeFormat([], { hour: "numeric", minute: "2-digit" }).formatToParts(d);
+    const period = time.find((p) => p.type === "dayPeriod");
+    text("clock-hm", time.filter((p) => p.type !== "dayPeriod").map((p) => p.value).join("").trim());
+    text("clock-ampm", period ? period.value.toUpperCase() : "");
     text("clock-s", String(d.getSeconds()).padStart(2, "0"));
-    text("clock-date", d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) + (/[AP]M/i.test(d.toLocaleTimeString()) ? (d.getHours() < 12 ? " AM" : " PM") : ""));
+    const date = new Intl.DateTimeFormat([], { weekday: "long", month: "short", day: "numeric" }).formatToParts(d);
+    text("clock-day", date.find((p) => p.type === "weekday").value);
+    text("clock-date", date.filter((p) => p.type !== "weekday").map((p) => p.value).join("").replace(/^[,\s]+|[,\s]+$/g, ""));
   }
 
   // ---------- pomodoro ----------
@@ -199,11 +205,11 @@
   // One .limit node per window key, updated in place (like the session cards)
   // so the bar's width transition plays and nothing is re-created every second.
   const LIMIT_HTML = `
-        <div class="limit-label"></div>
-        <div class="limit-pct"></div>
-        <div class="bar"><div class="bar-fill"></div></div>
-        <div class="limit-reset"></div>
-        <div class="limit-pace" hidden></div>`;
+        <span class="limit-pct"></span>
+        <div class="limit-main">
+          <div class="limit-row"><span class="limit-label"></span><span class="limit-reset"><span class="limit-reset-at"></span><span class="limit-pace" hidden></span></span></div>
+          <div class="bar"><div class="bar-fill"></div></div>
+        </div>`;
   const limitNodes = new Map();
   function renderLimits(windows, errors) {
     const limits = $("limits");
@@ -245,7 +251,7 @@
     const fill = el.querySelector(".bar-fill");
     setClass(fill, "bar-fill" + (heat(pct || 0) ? " " + heat(pct || 0) : ""));
     fill.style.width = Math.max(0, Math.min(100, pct || 0)) + "%";
-    setText(el.querySelector(".limit-reset"), w.seconds_to_reset != null ? `resets in ${fmtDuration(w.seconds_to_reset)} · ${fmtResetAt(w.resets_at)}` : "no activity in window");
+    setText(el.querySelector(".limit-reset-at"), w.seconds_to_reset != null ? `resets ${fmtResetAt(w.resets_at)}` : "no activity in window");
     const pace = paceLine(w), paceEl = el.querySelector(".limit-pace");
     paceEl.hidden = !pace;
     if (pace) { setText(paceEl, pace.text); setClass(paceEl, "limit-pace" + (pace.warn ? " warn" : "")); }
@@ -262,23 +268,16 @@
     text("t-in", fmtTokens(t.input));
     text("t-cache", fmtTokens(t.cache_read));
     text("t-write", fmtTokens(t.cache_write));
-    text("today-msgs", `${t.messages || 0} msgs`);
+    text("t-msgs", String(t.messages || 0));
 
+    // 24 h burn: the hourly buckets as one smooth amber curve over its filled area
     const tl = usage.timeline || [];
+    lastTimeline = tl;
     const peak = Math.max(1, usage.peak || 0);
-    const box = $("timeline");
-    if (box.childElementCount !== tl.length) {
-      box.innerHTML = tl.map(() => '<div class="tb"></div>').join("");
-    }
-    tl.forEach((b, i) => {
-      const el = box.children[i];
-      const h = Math.max(2, Math.round((b.tokens / peak) * 100));
-      el.style.height = h + "%";
-      el.className = "tb" + (i === tl.length - 1 ? " now" : "") + (b.tokens === 0 ? " empty" : "");
-      el.dataset.label = `${new Date(b.hour_start).toLocaleTimeString([], { hour: "2-digit" })} · ${fmtTokens(b.tokens)}`;
-      el.title = el.dataset.label;
-    });
-    peakLabel = tl.length ? `peak ${fmtTokens(usage.peak)}` : "";
+    const line = smoothPath(tl.map((b) => b.tokens), peak);
+    $("burn-line").setAttribute("d", line);
+    $("burn-area").setAttribute("d", line ? `${line} L ${BURN_W},${BURN_H} L 0,${BURN_H} Z` : "");
+    peakLabel = tl.length ? `24 h burn · peak ${fmtTokens(usage.peak)}` : "";
     if (Date.now() > tapUntil) text("timeline-peak", peakLabel);
     const labels = $("timeline-labels");
     if (tl.length && labels.childElementCount === 0) {
@@ -294,43 +293,71 @@
     if (!w.rate_per_hour || !w.projected_full_at) return null;
     const full = new Date(w.projected_full_at).getTime();
     const reset = w.resets_at ? new Date(w.resets_at).getTime() : Infinity;
-    if (full < reset) return { warn: true, text: `at this pace 100% at ${fmtResetAt(w.projected_full_at)}` };
+    if (full < reset) return { warn: true, text: `▲ full ${fmtResetAt(w.projected_full_at)}` };
     return { warn: false, text: "safe until reset" };
   }
 
-  // Touch panels have no hover: tapping a bar shows its label for a few seconds.
-  let peakLabel = "", tapUntil = 0;
+  // The burn curve: a Catmull-Rom spline through the buckets as cubic segments
+  // in a 480x100 box (stretched by preserveAspectRatio="none"), clamped so the
+  // control points never dip below the base line.
+  const BURN_W = 480, BURN_H = 100;
+  function smoothPath(values, max) {
+    const n = values.length;
+    if (n < 2) return "";
+    const pts = values.map((v, i) => [(i * BURN_W) / (n - 1), BURN_H - (Math.max(0, v) / max) * BURN_H]);
+    const clamp = (y) => Math.max(0, Math.min(BURN_H, y));
+    let d = `M ${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
+    for (let i = 0; i < n - 1; i++) {
+      const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+      d += ` C ${(p1[0] + (p2[0] - p0[0]) / 6).toFixed(1)},${clamp(p1[1] + (p2[1] - p0[1]) / 6).toFixed(1)}`
+         + ` ${(p2[0] - (p3[0] - p1[0]) / 6).toFixed(1)},${clamp(p2[1] - (p3[1] - p1[1]) / 6).toFixed(1)}`
+         + ` ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
+    }
+    return d;
+  }
+
+  // Touch panels have no hover: tapping the curve shows the hour under the finger for a few seconds.
+  let peakLabel = "", tapUntil = 0, lastTimeline = [];
   $("timeline").addEventListener("click", (ev) => {
-    const bar = ev.target.closest(".tb");
-    if (!bar) return;
+    if (lastTimeline.length < 2) return;
+    const r = ev.currentTarget.getBoundingClientRect();
+    const i = Math.round(((ev.clientX - r.left) / Math.max(1, r.width)) * (lastTimeline.length - 1));
+    const b = lastTimeline[Math.max(0, Math.min(lastTimeline.length - 1, i))];
     tapUntil = Date.now() + 4000;
-    text("timeline-peak", bar.dataset.label || "");
+    text("timeline-peak", `${new Date(b.hour_start).toLocaleTimeString([], { hour: "2-digit" })} · ${fmtTokens(b.tokens)}`);
     setTimeout(() => { if (Date.now() >= tapUntil) text("timeline-peak", peakLabel); }, 4100);
   });
 
   // ---------- sessions ----------
-  // The body between the project line and the detail line: the task list's
-  // progress (from ~/.claude/tasks) and Claude's last reply, so a card says what
-  // is going on without opening the overlay. The foot's ctx tag is a gauge
-  // against the model's window with the compaction count.
+  // A card is one compact record: the head (status, age | project@branch), the
+  // title, a body with the task progress, your last prompt and Claude's last
+  // reply clamped to the lines that fit (fitReply), the "now" line, the action
+  // row and a 2x2 grid of figures behind a dashed rule. The grid's cells sit at
+  // the same spot on every card, so the four cards read as one table: model and
+  // mode | uptime and messages; the context gauge | agents and commits.
   const CARD_HTML = `
-      <div class="card-top"><span class="pill"></span><span class="muted card-ago"></span></div>
+      <div class="card-top"><span class="pill"></span><span class="card-ago"></span><span class="card-proj"><b></b><span class="card-branch"></span></span></div>
       <div class="card-title"></div>
-      <div class="card-proj"><b></b><span class="card-branch"></span></div>
       <div class="card-body">
         <div class="card-tasks" hidden><span class="bar bar-mini"><span class="bar-fill"></span></span><span class="card-tasks-text"></span></div>
+        <div class="card-prompt" hidden></div>
         <div class="card-reply" hidden></div>
       </div>
       <div class="card-detail"></div>
       <div class="card-actions" hidden></div>
-      <div class="card-foot"><span class="tag model" hidden></span><span class="tag card-ctx"><span class="card-ctx-text"></span><span class="bar bar-mini"><span class="bar-fill"></span></span><span class="card-ctx-pct"></span><span class="card-compact" hidden></span></span><span class="tag card-agents" hidden></span><span class="tag card-msgs"></span></div>`;
+      <div class="card-meta">
+        <span class="cell"><span class="tag model" hidden></span><span class="tag card-mode" hidden></span></span>
+        <span class="cell"><span class="tag card-up" hidden></span><span class="tag card-msgs"></span></span>
+        <span class="cell card-ctx">ctx <b class="card-ctx-text"></b><span class="bar bar-mini"><span class="bar-fill"></span></span><b class="card-ctx-pct"></b><span class="card-compact" hidden></span></span>
+        <span class="cell"><span class="tag card-agents" hidden></span><span class="tag card-commits" hidden></span></span>
+      </div>`;
   const cardNodes = new Map();
   // Action row of a card (and the preset row of the overlay). Rebuilt only when
   // its key changes so a tap never lands on a freshly re-created button.
   //   attention + answerable question: the options of a single-choice question (or one
   //   "answer…" button that opens the overlay for multi-choice / several questions) + "terminal";
   //   a question only read from the transcript (no hook waiting) gets no buttons
-  //   idle + can_send: the first ``limit`` presets
+  //   idle + can_send: the first ``limit`` presets (three on a card, all in the overlay)
   function actionButtons(s, presets, limit) {
     const buttons = [];
     if (s.status === "attention" && s.question && s.question.answerable) {
@@ -373,25 +400,36 @@
     setText(el.querySelector(".card-title"), s.name);
     setText(el.querySelector(".card-proj b"), s.project);
     setText(el.querySelector(".card-branch"), s.branch ? "@" + s.branch : "");
-    // a pending question replaces the detail line with what Claude is asking
+    // a pending question replaces the "now" line with what Claude is asking
     const q = s.question && s.question.questions && s.question.questions[0];
     setText(el.querySelector(".card-detail"), q ? q.question : s.detail);
-    updateActions(el.querySelector(".card-actions"), s, presets, 4);
+    updateActions(el.querySelector(".card-actions"), s, presets, 3);
     const tasks = el.querySelector(".card-tasks");
     tasks.hidden = !s.tasks;
     if (s.tasks) {
       tasks.querySelector(".bar-fill").style.width = (s.tasks.total ? (100 * s.tasks.done) / s.tasks.total : 0) + "%";
       setText(tasks.querySelector(".card-tasks-text"), tasksLabel(s.tasks));
     }
-    // the reply gives way to the question (already on the detail line)
+    const prompt = el.querySelector(".card-prompt");
+    prompt.hidden = !s.last_prompt;
+    setText(prompt, s.last_prompt || "");
     const reply = el.querySelector(".card-reply");
-    reply.hidden = !!q || !s.last_reply;
-    setText(reply, reply.hidden ? "" : s.last_reply);
+    reply.hidden = !s.last_reply;
+    setText(reply, s.last_reply || "");
+    fitReply(el.querySelector(".card-body"));
     const model = el.querySelector(".tag.model");
     setText(model, s.model || "");
     model.hidden = !s.model;
+    const mode = el.querySelector(".card-mode");
+    setText(mode, modeLabel(s.permission_mode));
+    mode.hidden = !mode.textContent;
+    const up = el.querySelector(".card-up");
+    const started = s.started_at ? new Date(s.started_at).getTime() : 0;
+    up.hidden = !started;
+    setText(up, started ? "up " + fmtDuration((now - started) / 1000) : "");
+    setText(el.querySelector(".card-msgs"), `${s.messages} msgs`);
     const ctx = el.querySelector(".card-ctx"), pct = s.context_pct || 0;
-    setText(ctx.querySelector(".card-ctx-text"), "ctx " + fmtTokens(s.context_tokens));
+    setText(ctx.querySelector(".card-ctx-text"), fmtTokens(s.context_tokens));
     const fill = ctx.querySelector(".bar-fill");
     setClass(fill, "bar-fill" + (ctxHeat(pct) ? " " + ctxHeat(pct) : ""));
     fill.style.width = Math.min(100, pct) + "%";
@@ -400,12 +438,33 @@
     compact.hidden = !s.compactions;
     setText(compact, s.compactions ? `⟲${s.compactions}` : "");
     compact.title = s.compactions ? compactLabel(s) : "";
-    setText(el.querySelector(".card-msgs"), `${s.messages} msgs`);
     const agents = el.querySelector(".card-agents");
     agents.hidden = !s.agents;
     setText(agents, agentsLabel(s));
     agents.classList.toggle("active", (s.active_agents || 0) > 0);
+    const commits = el.querySelector(".card-commits");
+    commits.hidden = !s.commits;
+    setText(commits, s.commits ? commitsLabel(s.commits) : "");
   }
+  // The reply shows as many whole lines as the body has room for below the
+  // task row and the prompt line (the body takes the height the other rows
+  // leave). Re-fitted on every snapshot and whenever the body resizes.
+  function fitReply(body) {
+    const reply = body.querySelector(".card-reply");
+    if (reply.hidden) return;
+    const lh = parseFloat(getComputedStyle(reply).lineHeight) || 20;
+    const room = body.getBoundingClientRect().bottom - reply.getBoundingClientRect().top;
+    const lines = String(Math.max(1, Math.floor(room / lh)));
+    if (reply.style.webkitLineClamp !== lines) reply.style.webkitLineClamp = lines;
+  }
+  const bodyResized = typeof ResizeObserver === "function" ? new ResizeObserver((entries) => entries.forEach((e) => fitReply(e.target))) : null;
+  // Claude Code's permission mode, short; nothing for the default
+  const MODES = { plan: "plan", acceptEdits: "auto-edits", bypassPermissions: "bypass", dontAsk: "dont-ask" };
+  function modeLabel(mode) {
+    if (!mode || mode === "default") return "";
+    return MODES[mode] || String(mode).toLowerCase();
+  }
+  function commitsLabel(n) { return `${n} ${n === 1 ? "commit" : "commits"}`; }
   // "3/7 tasks · reviewing the access rules"; "5/5 tasks" once everything is done
   function tasksLabel(t) {
     return `${t.done}/${t.total} tasks` + (t.current ? ` · ${t.current}` : "");
@@ -446,8 +505,9 @@
     if (pomo.phase !== "break") drawClaude();
     if (fresh && settings.alert_sound) { unlockAudio(); chime("alert"); }
     const parts = [`${summary.today || 0} today`, `${summary.done || 0} done`, `${summary.working || 0} working`];
-    if (summary.attention) parts.push(`${summary.attention} need you`);
-    text("sessions-summary", parts.join(" · "));
+    if (summary.attention) parts.push(`<span class="needs-you">${summary.attention} ${summary.attention === 1 ? "needs" : "need"} you</span>`);
+    const summaryHtml = parts.join(" · ");
+    if ($("sessions-summary").innerHTML !== summaryHtml) $("sessions-summary").innerHTML = summaryHtml;
     $("sessions-empty").hidden = sessions.length > 0;
     const seen = new Set();
     let prev = null;
@@ -458,6 +518,7 @@
         el = document.createElement("div");
         el.dataset.id = s.id;
         el.innerHTML = CARD_HTML;
+        if (bodyResized) bodyResized.observe(el.querySelector(".card-body"));
         cardNodes.set(s.id, el);
       }
       updateCard(el, s, now, alerted.has(s.id), lastPresets);
@@ -466,7 +527,7 @@
       prev = el;
     });
     for (const [id, el] of cardNodes) {
-      if (!seen.has(id)) { el.remove(); cardNodes.delete(id); }
+      if (!seen.has(id)) { if (bodyResized) bodyResized.unobserve(el.querySelector(".card-body")); el.remove(); cardNodes.delete(id); }
     }
     renderOverlay(sessions, now);
   }
@@ -503,6 +564,7 @@
     text("ov-title", s.name || "");
     text("ov-cwd", s.cwd || "");
     text("ov-branch", s.branch || "–");
+    text("ov-commits", s.commits ? `${commitsLabel(s.commits)} since it started` : "none since it started");
     text("ov-model", s.model || "–");
     const started = s.started_at ? new Date(s.started_at).getTime() : 0;
     text("ov-started", started ? `${fmtTime(s.started_at)} · running ${fmtDuration((now - started) / 1000)}` : "–");
@@ -675,7 +737,7 @@
     setVolumeSlider(sp.volume);
     text("np-title", sp.title || "—");
     text("np-artist", sp.artist || "");
-    text("np-album", sp.album || "");
+    text("np-album", sp.album || "");  // CSS adds the " · " separator while it has text
     text("btn-play", sp.status === "Playing" ? "⏸" : "▶");
     const art = $("art");
     if (sp.art_url && art.dataset.src !== sp.art_url) {
@@ -817,24 +879,28 @@
   });
 
   // ---------- system ----------
-  function renderSystem(sys, errors) {
+  function renderSystem(sys, errors, settings) {
     if (!sys) return;
     const cpu = sys.cpu || {}, mem = sys.mem || {}, gpu = sys.gpu, disks = sys.disks || [], net = sys.net || {};
-    text("sys-uptime", `up ${fmtDuration(sys.uptime_s)}`);
+    const hist = sys.history || {};
+    const span = ((hist.cpu || []).length) * (Number(settings.system_interval) || 1);
+    text("sys-uptime", `up ${fmtDuration(sys.uptime_s)} · history ${fmtDuration(span)}`);
     text("sys-load", `load ${(sys.load || []).map((x) => x.toFixed(1)).join(" ")}`);
-    drawSpark(sys.history || {});
-    // Current values live in the one-line summary; the trace below is history only.
+    text("legend-cpu", `cpu ${Math.round(cpu.percent || 0)}%`);
+    text("legend-gpu", gpu ? `gpu ${Math.round(gpu.percent || 0)}%` : "gpu");
+    drawSpark(hist);
+    // Current values live in the rail under the mascot; the trace in the bottom row is history only.
     const root = disks[0];
     $("sys-line").innerHTML = [
-      `CPU <b>${Math.round(cpu.percent || 0)}%</b>${cpu.temp != null ? ` <b>${Math.round(cpu.temp)}°C</b>` : ""}`,
-      gpu ? `GPU <b>${Math.round(gpu.percent || 0)}%</b>${gpu.temp != null ? ` <b>${Math.round(gpu.temp)}°C</b>` : ""}` : "",
+      `CPU <b>${Math.round(cpu.percent || 0)}%${cpu.temp != null ? ` ${Math.round(cpu.temp)}°` : ""}</b>`,
+      gpu ? `GPU <b>${Math.round(gpu.percent || 0)}%${gpu.temp != null ? ` ${Math.round(gpu.temp)}°` : ""}</b>` : "<span></span>",
       `MEM <b>${Math.round(mem.percent || 0)}%</b>`,
-      root ? `DISK <b>${Math.round(root.percent)}%</b>` : "",
+      root ? `DISK <b>${Math.round(root.percent)}%</b>` : "<span></span>",
       `↓ <b>${fmtBytes(net.rx_bps)}/s</b>`,
       `↑ <b>${fmtBytes(net.tx_bps)}/s</b>`,
-    ].filter(Boolean).map((s) => `<span>${s}</span>`).join("");
+    ].map((s) => `<span>${s}</span>`).join("");
   }
-  const SPARK_W = 120, SPARK_H = 40;
+  const SPARK_W = 200, SPARK_H = 60;
   function sparkPoints(arr, max) {
     const n = arr.length;
     return arr.map((v, i) => `${(i / (n - 1)) * SPARK_W},${SPARK_H - (Math.max(0, Math.min(max, v)) / max) * SPARK_H}`).join(" ");
@@ -847,6 +913,31 @@
   }
   function drawSpark(hist) {
     $("spark-cpu").innerHTML = sparkArea(hist.cpu, "fill", 100) + sparkLine(hist.gpu, "gpu", 100) + sparkLine(hist.cpu, "cpu", 100);
+  }
+
+  // ---------- git ----------
+  // Today's commits across the sessions' repositories (snapshot key ``git``).
+  // Rows are keyed by hash and only rebuilt when the list changes; the age is refreshed every snapshot.
+  let gitKey = "";
+  function renderGit(g, now) {
+    g = g || {};
+    const commits = g.commits || [];
+    const head = $("git-summary");
+    const summary = g.count
+      ? `${commitsLabel(g.count)} · <span class="git-add">+${g.added || 0}</span> <span class="git-del">−${g.deleted || 0}</span>`
+      : "";
+    if (head.innerHTML !== summary) head.innerHTML = summary;
+    const box = $("git-commits");
+    const key = commits.map((c) => `${c.hash}|${c.repo}|${c.message}`).join("\n");
+    if (key !== gitKey) {
+      gitKey = key;
+      box.innerHTML = commits.map((c) => `<div class="commit" data-hash="${escapeHtml(c.hash)}">
+        <span class="c-hash">${escapeHtml(c.hash)}</span><span class="c-repo">${escapeHtml(c.repo)}</span><span class="c-msg">${escapeHtml(c.message)}</span><span class="c-ago"></span></div>`).join("");
+    }
+    commits.forEach((c, i) => { const row = box.children[i]; if (row) setText(row.querySelector(".c-ago"), fmtAgo(c.ts, now)); });
+    const empty = $("git-empty");
+    empty.hidden = commits.length > 0;
+    if (!commits.length) setText(empty, "no commits today");
   }
 
   // ---------- render root ----------
@@ -873,7 +964,8 @@
     try { renderSessions(snap.sessions || [], snap.sessions_summary || {}, now, snap.settings || {}); } catch (e) { console.error("sessions", e); }
     try { renderSpotify(snap.spotify || {}, errors); } catch (e) { console.error("spotify", e); }
     try { renderQueue(snap.spotify_queue, snap.spotify || {}, errors); } catch (e) { console.error("queue", e); }
-    try { renderSystem(snap.system, errors); } catch (e) { console.error("system", e); }
+    try { renderSystem(snap.system, errors, snap.settings || {}); } catch (e) { console.error("system", e); }
+    try { renderGit(snap.git, now); } catch (e) { console.error("git", e); }
   }
 
   // ---------- transport ----------

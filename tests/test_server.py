@@ -20,9 +20,10 @@ def make_client(**kw):
 def test_state_shape():
     client, _ = make_client()
     data = client.get("/api/state").json()
-    for key in ("now", "usage", "sessions", "sessions_summary", "spotify", "spotify_queue", "system", "errors"):
+    for key in ("now", "usage", "sessions", "sessions_summary", "spotify", "spotify_queue", "system", "git", "errors"):
         assert key in data
     assert data["usage"]["windows"] == []
+    assert data["git"] == {"commits": [], "count": 0, "added": 0, "deleted": 0}
     assert data["spotify_queue"] == {"configured": False, "tracks": []}
 
 
@@ -51,6 +52,8 @@ def test_demo_mode_serves_canned_data():
     assert all(w["projected_full_at"] and w["rate_per_hour"] for w in data["usage"]["windows"])
     assert data["spotify_queue"]["configured"] and len(data["spotify_queue"]["tracks"]) == 6
     assert data["system"]["cpu"]["percent"] == 6.0
+    assert data["git"]["count"] >= len(data["git"]["commits"]) > 0 and data["git"]["added"] > 0
+    assert sum(s["commits"] for s in data["sessions"]) > 0
     r = client.post("/api/spotify/play_pause").json()
     assert r["spotify"]["status"] == "Paused"
 
@@ -330,7 +333,7 @@ def test_sessions_collector_passes_hooks_and_prunes_expired(monkeypatch, tmp_pat
 
 def test_state_exposes_alert_settings_and_presets():
     client, _ = make_client(alert_sound=True, presets=(("go", "Go on."),))
-    assert client.get("/api/state").json()["settings"] == {"alert_sound": True, "presets": [{"label": "go", "text": "Go on."}], "context_warn": 80}
+    assert client.get("/api/state").json()["settings"] == {"alert_sound": True, "presets": [{"label": "go", "text": "Go on."}], "context_warn": 80, "system_interval": 1.0}
     client, _ = make_client(context_warn_pct=70)
     settings = client.get("/api/state").json()["settings"]
     assert settings["alert_sound"] is False and len(settings["presets"]) >= 3 and settings["context_warn"] == 70
@@ -382,6 +385,61 @@ def test_sessions_loop_notifies_on_attention_transitions(monkeypatch):
 
     asyncio.run(run_twice())
     assert quiet == []
+
+
+# ---------- git ----------
+
+
+def _commit(hash, path, ts):
+    from edgeboard.collectors.git import Commit
+
+    return Commit(hash, path.rsplit("/", 1)[-1], path, "m", ts, "me", 3, 1)
+
+
+def test_git_collector_reads_session_repositories_and_configured_ones(monkeypatch):
+    import asyncio
+
+    import edgeboard.server as server
+    from edgeboard.collectors import git
+    from edgeboard.server import Collectors
+
+    state = State()
+    state.sessions = [{"id": "a", "cwd": "/home/me/Dashboard/edgeboard", "started_at": "2026-09-04T09:30:00+00:00"}, {"id": "b", "cwd": ""}]
+    seen = {}
+    found = [_commit("b", "/home/me/Dashboard", "2026-09-04T10:00:00+00:00"), _commit("a", "/home/me/Dashboard", "2026-09-04T09:00:00+00:00"), _commit("c", "/srv/blog", "2026-09-04T08:00:00+00:00")]
+
+    def fake_collect(cwds, since, runner=None):
+        seen["cwds"], seen["since"] = list(cwds), since
+        return found
+
+    monkeypatch.setattr(git, "collect_git", fake_collect)
+    c = Collectors(Settings(git_repos=("/srv/blog",)), state, lambda a: (0, ""))
+    assert asyncio.run(c._git()) is None
+    assert seen["cwds"] == ["/srv/blog", "/home/me/Dashboard/edgeboard", ""]
+    assert seen["since"].hour == 0 and seen["since"].tzinfo is not None
+    assert state.git["count"] == 3 and state.git["added"] == 9 and [x["hash"] for x in state.git["commits"]] == ["b", "a", "c"]
+
+    # the next sessions round counts each session's commits since it started
+    class FakeSession(dict):
+        def to_dict(self):
+            return dict(self)
+
+    rows = [FakeSession({"id": "a", "status": "idle", "cwd": "/home/me/Dashboard/edgeboard", "started_at": "2026-09-04T09:30:00+00:00"}), FakeSession({"id": "d", "status": "done", "cwd": "/srv/blog", "started_at": None})]
+    monkeypatch.setattr(server, "collect_sessions", lambda *a, **k: (rows, {}))
+    asyncio.run(c._sessions())
+    assert [s["commits"] for s in state.sessions] == [1, 1]
+
+
+def test_git_collector_retries_soon_while_there_is_nothing_to_read(monkeypatch):
+    import asyncio
+
+    from edgeboard.collectors import git
+    from edgeboard.server import Collectors
+
+    monkeypatch.setattr(git, "collect_git", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not run git without a path")))
+    state = State()
+    assert asyncio.run(Collectors(Settings(), state, lambda a: (0, ""))._git()) == 5.0
+    assert state.git["count"] == 0
 
 
 # ---------- answering questions and sending presets ----------

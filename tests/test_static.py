@@ -72,9 +72,9 @@ def test_mascot_is_pomodoro_tap_target_not_bouncing():
     assert "bounce" not in css
     sessions_js = js.split("function renderSessions")[1].split("function escapeHtml")[0]
     assert "mascot" not in sessions_js
-    # tapping the mascot area runs a 25 min focus / 5 min break pomodoro shown above the clock
+    # tapping the mascot area runs a 25 min focus / 5 min break pomodoro shown in a box under the clock
     assert 'id="mascot-wrap"' in html and 'id="pomo"' in html
-    assert html.index('id="pomo"') < html.index('class="clock"')
+    assert html.index('class="clock"') < html.index('id="pomo"') < html.index('id="mascot-wrap"')
     pomo_js = js.split("// ---------- pomodoro ----------")[1].split("// ----------")[0]
     assert "25 * 60" in pomo_js and "5 * 60" in pomo_js
     assert '$("mascot-wrap").addEventListener("click"' in pomo_js
@@ -130,10 +130,10 @@ def test_limits_show_pace_projection():
     js = (STATIC / "app.js").read_text()
     css = (STATIC / "style.css").read_text()
     usage_js = js.split("// ---------- usage ----------")[1].split("// ---------- sessions ----------")[0]
-    # the server's projection (rate_per_hour / projected_full_at) becomes a third line under the bar:
-    # amber "at this pace 100% at HH:MM" before the reset, "safe until reset" otherwise, nothing when flat
+    # the server's projection (rate_per_hour / projected_full_at) follows the reset time over the bar:
+    # amber "▲ full HH:MM" before the reset, "safe until reset" otherwise, nothing when flat
     assert "projected_full_at" in usage_js and "rate_per_hour" in usage_js
-    assert "at this pace 100% at" in usage_js and "safe until reset" in usage_js
+    assert "▲ full" in usage_js and "safe until reset" in usage_js
     assert re.search(r"^\.limit-pace\.warn\s*\{[^}]*color:\s*var\(--accent-2\)", css, re.M)
 
 
@@ -194,3 +194,47 @@ def test_limits_update_in_place():
     assert 'limits.innerHTML = ""' not in usage_js
     assert "limitNodes" in usage_js and "LIMIT_HTML" in usage_js
     assert 'querySelector(".bar-fill")' in usage_js and "fill.style.width" in usage_js
+
+
+def test_three_columns_with_an_activity_system_git_row():
+    html = (STATIC / "index.html").read_text()
+    js = (STATIC / "app.js").read_text()
+    css = (STATIC / "style.css").read_text()
+    # rail | centre | spotify; the centre stacks limits, one row of four cards and the activity row
+    cols = re.search(r"^\.dash\s*\{[^}]*grid-template-columns:\s*([^;]+);", css, re.M).group(1).split()
+    assert len(cols) == 3, cols
+    assert re.search(r"^\.sessions\s*\{[^}]*grid-template-columns:\s*repeat\(4,", css, re.M)
+    assert html.index('class="col col-rail"') < html.index('class="col col-main"') < html.index('class="col col-side"')
+    # the rail: the watch-style clock (seconds beside the minutes, the date under it), pomodoro, errors, mascot, current system figures
+    rail = html.split('class="col col-rail"')[1].split("</section>")[0]
+    for element in ('id="clock-hm"', 'id="clock-s"', 'id="clock-date"', 'id="pomo"', 'id="err-line"', 'id="mascot"', 'id="sys-line"'):
+        assert element in rail, element
+    assert rail.index('id="clock-hm"') < rail.index('id="pomo"') < rail.index('id="mascot"') < rail.index('id="sys-line"')
+    # limits in one row with today's counters (including the message count) behind them
+    limits = html.split('class="panel panel-limits"')[1].split('class="panel panel-sessions"')[0]
+    assert 'id="limits"' in limits and 'id="t-msgs"' in limits and 'id="t-write"' in limits
+    assert re.search(r"^\.panel-limits\s*\{[^}]*grid-template-columns:\s*1fr 1fr", css, re.M)
+    # the activity row: burn curve (tap reads the hour), cpu/gpu history with its legend values, today's commits
+    row = html.split('class="bottom-row"')[1].split("</section>")[0]
+    assert 'id="timeline"' in row and 'id="burn-line"' in row and 'id="burn-area"' in row
+    assert 'id="spark-cpu"' in row and 'id="legend-cpu"' in row and 'id="legend-gpu"' in row
+    assert 'id="git-commits"' in row and 'id="git-summary"' in row and 'id="git-empty"' in row
+    assert "smoothPath(" in js and "lastTimeline" in js and 'class="tb"' not in js
+    git_js = js.split("// ---------- git ----------")[1].split("// ---------- render root ----------")[0]
+    assert "c.hash" in git_js and "c.repo" in git_js and "c.message" in git_js and "fmtAgo(c.ts" in git_js
+    assert "renderGit(snap.git" in js and "system_interval" in js
+    # a finished card says how many commits it made; the overlay spells it out
+    sessions_js = js.split("// ---------- sessions ----------")[1].split("// ---------- spotify ----------")[0]
+    assert "s.commits" in sessions_js and 'id="ov-commits"' in html
+    # spotify: square art over a centred title, artist · album on one line
+    assert 'id="np-album"' in html and re.search(r"^\.art-wrap\s*\{[^}]*width:\s*(\d+)px;\s*height:\s*\1px", css, re.M)
+
+
+def test_kiosk_script_opens_a_debug_port_only_when_asked():
+    # tests/test_kiosk.py drives the live kiosk over CDP; the port is opt-in and loopback-only
+    script = (ROOT / "scripts" / "kiosk.sh").read_text()
+    assert "EDGEBOARD_KIOSK_DEBUG_PORT" in script
+    assert re.search(r'--remote-debugging-port="?\$\{?EDGEBOARD_KIOSK_DEBUG_PORT|--remote-debugging-port="\$DEBUG_PORT"', script)
+    assert "--remote-debugging-address" not in script or "127.0.0.1" in script
+    assert "EDGEBOARD_KIOSK_DEBUG_PORT" in (ROOT / ".env.example").read_text()
+    assert "EDGEBOARD_KIOSK_DEBUG_PORT" in (ROOT / "README.md").read_text()

@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from edgeboard import __version__
 from edgeboard.answers import Answers
-from edgeboard.collectors import claude_usage, spotify, spotify_queue
+from edgeboard.collectors import claude_usage, git, spotify, spotify_queue
 from edgeboard.collectors.claude_inbox import find_inbox, send_message
 from edgeboard.collectors.claude_sessions import ATTENTION, WORKING, attention_transitions, collect_sessions, os_pid_alive, prune_hooks
 from edgeboard.collectors.system import SystemSampler
@@ -153,6 +153,7 @@ class Collectors:
         self._usage_rate_limited = 0  # consecutive 429s, drives the backoff
         self._usage_samples: dict[str, list[claude_usage.Sample]] = {}  # per window key, for the pace projection
         self._queue_client = spotify_queue.QueueClient(settings.spotify_token_file)
+        self._git_commits: list[git.Commit] = []  # every commit of today, for the per-session counts
 
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
@@ -164,6 +165,7 @@ class Collectors:
             asyncio.create_task(self._loop("sessions", self.settings.sessions_interval, self._sessions)),
             asyncio.create_task(self._loop("timeline", self.settings.timeline_interval, self._timeline)),
             asyncio.create_task(self._loop("usage", self.settings.usage_interval, self._usage)),
+            asyncio.create_task(self._loop("git", self.settings.git_interval, self._git)),
         ]
 
     async def stop(self) -> None:
@@ -249,6 +251,8 @@ class Collectors:
         self.answers.expire()
         sessions, summary = await self._run(collect_sessions, self.settings, None, os_pid_alive, dict(self.state.hooks))
         self.state.sessions = [s.to_dict() for s in sessions]
+        for s in self.state.sessions:
+            s["commits"] = git.commits_since(self._git_commits, s.get("cwd") or "", s.get("started_at"))
         self.state.sessions_summary = summary
         # Attention alerts: the page flashes the card itself; the desktop notification is opt-in.
         alerts = attention_transitions(self._statuses, self.state.sessions)
@@ -257,6 +261,16 @@ class Collectors:
             for s in alerts:
                 title = "Claude needs you" if s["status"] == ATTENTION else "Claude is waiting for you"
                 await self._run(self.notifier, title, f"{s.get('name') or s['id']}: {s.get('detail') or ''}".rstrip(": "))
+
+    async def _git(self) -> float | None:
+        """Today's commits in the repositories of the sessions on the panel and of ``settings.git_repos``."""
+        cwds = [*self.settings.git_repos, *(s.get("cwd") or "" for s in self.state.sessions)]
+        if not any(cwds):
+            return 5.0  # nothing to read yet (the sessions loop has not run); try again soon
+        since = datetime.now(timezone.utc).astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+        self._git_commits = await self._run(git.collect_git, cwds, since)
+        self.state.git = git.summarize(self._git_commits)
+        return None
 
     async def _timeline(self) -> None:
         now = datetime.now(timezone.utc)
@@ -381,6 +395,7 @@ def create_app(
         "alert_sound": settings.alert_sound,
         "presets": [{"label": label, "text": text} for label, text in settings.presets],
         "context_warn": settings.context_warn_pct,
+        "system_interval": settings.system_interval,
     }
     state.build = build_id()
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

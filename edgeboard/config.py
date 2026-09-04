@@ -37,6 +37,11 @@ def parse_presets(raw: str) -> tuple[tuple[str, str], ...]:
     return tuple(presets) or DEFAULT_PRESETS
 
 
+def parse_paths(raw: str) -> tuple[str, ...]:
+    """``~/a:/srv/b`` -> ("/home/me/a", "/srv/b"); blank entries dropped."""
+    return tuple(str(Path(item.strip()).expanduser()) for item in raw.split(":") if item.strip())
+
+
 def parse_env_file(path: Path) -> dict[str, str]:
     """Return KEY=value pairs from a dotenv-style file; {} if it does not exist."""
     try:
@@ -90,6 +95,10 @@ class Settings:
     # marker, and the utilization (%) from which the gauge turns amber (red 10 above).
     context_window: int = 200_000
     context_warn_pct: int = 80
+    # Git pane: how often today's commits are read, and repositories to read
+    # besides those of the sessions on the panel (EDGEBOARD_GIT_REPOS, ``:``-separated).
+    git_interval: float = 30.0
+    git_repos: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None, env_file: Path | None = None) -> "Settings":
@@ -135,4 +144,6 @@ class Settings:
             answer_wait=get("ANSWER_WAIT", defaults.answer_wait),
             context_window=get("CONTEXT_WINDOW", defaults.context_window),
             context_warn_pct=get("CONTEXT_WARN", defaults.context_warn_pct),
+            git_interval=get("GIT_INTERVAL", defaults.git_interval),
+            git_repos=parse_paths(get("GIT_REPOS", "")),
         )

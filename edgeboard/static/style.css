@@ -27,6 +27,7 @@
   --panel-2: #1e1f28;
   --border: #363848;
   --text: #f8f8f2;
+  --text-2: #b4b8c8;   /* body copy on the cards: readable at 14px where --muted is not */
   --muted: #6272a4;
   --accent: #ff9f1c;
   --accent-2: #ffb86c;
@@ -57,26 +58,30 @@ body {
 body.kiosk { cursor: none; }   /* touch panel; scripts/kiosk.sh adds ?kiosk=1 */
 body.debug { cursor: default; } /* ?debug wins over kiosk */
 
+/* Three columns: the rail, the centre (limits / cards / activity row) and Spotify. */
 .dash {
   height: 100vh;
   display: grid;
-  grid-template-columns: 300px 620px 1fr 400px;
+  grid-template-columns: 260px 1fr 400px;
   gap: 18px;
   padding: 18px;
 }
 @media (max-width: 1900px) {
-  .dash { grid-template-columns: 240px 480px 1fr 340px; gap: 12px; padding: 14px 12px; }
-  .clock { font-size: 68px !important; }
+  .dash { grid-template-columns: 220px 1fr 340px; gap: 12px; padding: 14px 12px; }
+  .clock { font-size: 62px !important; }
+  .dateline { font-size: 19px; }
+  .bottom-row { height: 150px !important; }
 }
-.col { display: flex; flex-direction: column; gap: 16px; min-height: 0; }
+.col { display: flex; flex-direction: column; gap: 18px; min-height: 0; min-width: 0; }
 
 /* ---------- panes ---------- */
 .panel {
   position: relative;
   background: var(--panel);
   border: 1px solid var(--border);
-  padding: 16px 16px 12px;
+  padding: 18px 18px 14px;
   min-height: 0;
+  min-width: 0;
 }
 .panel-sessions { border-color: var(--ok); }   /* the active pane */
 .panel-head {
@@ -94,10 +99,26 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 .panel-head > span:last-child { font-size: 14px; }
 .muted { color: var(--muted); }
 
-/* ---------- column 1 ---------- */
-.col-clock { align-items: center; justify-content: space-between; padding: 6px 0; }
-.mascot-wrap { flex: 1; display: flex; align-items: center; justify-content: center; width: 100%; cursor: pointer; }
-.mascot { width: 176px; height: 128px; image-rendering: pixelated; }
+/* ---------- rail ---------- */
+.col-rail { gap: 14px; }
+/* the clock reads like a digital watch: hour:minute large, the seconds ticking small at the
+   baseline beside the minutes with the meridiem (12 h locales only) stacked above them, and the
+   date on its own line under it, the weekday bright and the rest muted. */
+.clock { display: flex; align-items: last baseline; gap: 10px; font-size: 76px; font-weight: 800; line-height: .9; letter-spacing: -.06em; white-space: nowrap; }
+.clock-side { display: flex; flex-direction: column; justify-content: flex-end; font-size: 20px; font-weight: 400; line-height: 1.1; letter-spacing: 0; color: var(--muted); }
+.clock-side span { display: block; }
+.dateline { font-size: 22px; line-height: 1.2; color: var(--muted); margin-top: -4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dateline #clock-day { color: var(--text); margin-right: .45em; }
+/* pomodoro countdown under the clock: amber while focusing, purple on the coffee break */
+.pomo { border: 1px solid var(--accent); padding: 10px 14px; display: flex; justify-content: space-between; align-items: baseline; font-size: 26px; font-weight: 800; line-height: 1; color: var(--accent); }
+.pomo-label { font-size: 14px; font-weight: 400; color: var(--muted); }
+.pomo.break { border-color: var(--done); color: var(--done); }
+.err-line {
+  font-size: 12px; line-height: 1.3; color: var(--bad);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.mascot-wrap { flex: 1; min-height: 0; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 12px; cursor: pointer; }
+.mascot { width: 154px; height: 112px; image-rendering: pixelated; }
 .mascot rect { fill: var(--accent); }
 .mascot rect.eye { fill: var(--bg); animation: blink 5s infinite; }
 .mascot rect.steam { fill: var(--muted); }
@@ -106,22 +127,14 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 .mascot.flash { animation: flash .3s 4; }
 @keyframes blink { 0%, 92%, 100% { opacity: 1; } 95%, 97% { opacity: 0; } }
 @keyframes flash { 0%, 100% { opacity: 1; } 50% { opacity: .15; } }
-/* pomodoro countdown above the clock: amber while focusing, purple on the coffee break */
-.pomo { width: 100%; font-size: 30px; font-weight: 800; line-height: 1; letter-spacing: -.02em; color: var(--accent); margin-bottom: 8px; }
-.pomo-label { font-size: 15px; font-weight: 400; letter-spacing: 0; color: var(--muted); margin-right: 8px; }
-.pomo.break { color: var(--done); }
-.clock { width: 100%; font-size: 88px; font-weight: 800; line-height: 1; letter-spacing: -.06em; display: flex; align-items: baseline; }
-.clock-s { font-size: 26px; margin-left: 6px; color: var(--muted); font-weight: 400; letter-spacing: 0; }
-.clock-date { width: 100%; font-size: 16px; color: var(--muted); margin-top: 10px; }
-.err-line {
-  margin-top: 10px; width: 100%;
-  font-size: 12px; line-height: 1.3; color: var(--bad);
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
-}
+/* current figures: CPU / GPU, MEM / DISK, down / up */
+.sys-line { border-top: 1px dashed var(--border); padding-top: 10px; font-size: 13px; color: var(--muted); display: grid; grid-template-columns: 1fr 1fr; row-gap: 5px; column-gap: 8px; }
+.sys-line span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sys-line b { color: var(--text); font-weight: 400; }
 
 /* ---------- bars: block-character look done in CSS ---------- */
 .bar {
-  height: 14px; overflow: hidden;
+  height: 16px; overflow: hidden;
   background: repeating-linear-gradient(90deg, var(--border) 0 6px, transparent 6px 9px);
 }
 .bar-fill {
@@ -137,56 +150,37 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 .bar-mini .bar-fill.warm { background-image: repeating-linear-gradient(90deg, var(--accent-2) 0 4px, var(--bg) 4px 6px); }
 .bar-mini .bar-fill.hot { background-image: repeating-linear-gradient(90deg, var(--bad) 0 4px, var(--bg) 4px 6px); }
 
-/* ---------- column 2 ---------- */
-.limits { display: flex; flex-direction: column; gap: 10px; }
-.limit { display: grid; grid-template-columns: 1fr 96px; grid-template-rows: auto auto auto; column-gap: 12px; align-items: center; }
-.limit-label { grid-column: 1; grid-row: 1; font-size: 15px; text-transform: lowercase; }
-.limit-reset { grid-column: 1; grid-row: 1; justify-self: end; font-size: 13px; color: var(--muted); }
-.limit .bar { grid-column: 1; grid-row: 2; margin-top: 4px; }
-/* pace projection under the bar: amber when the window fills before it resets */
-.limit-pace { grid-column: 1; grid-row: 3; font-size: 13px; color: var(--muted); margin-top: 3px; }
-.limit-pace.warn { color: var(--accent-2); }
-.limit-pct { grid-column: 2; grid-row: 1 / span 3; justify-self: end; font-size: 30px; font-weight: 800; color: var(--accent); line-height: 1; }
+/* ---------- centre: limits ---------- */
+/* one row: the two windows side by side, today's counters behind a dashed rule */
+.panel-limits { flex: none; display: grid; grid-template-columns: 1fr 1fr 460px; gap: 28px; align-items: center; }
+.limits { display: contents; }
+.limit { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.limit-pct { flex: none; width: 3.2ch; text-align: right; font-size: 30px; font-weight: 800; line-height: 1; color: var(--accent); }
 .limit-pct.high { color: var(--bad); }
 .limit-pct.mid { color: var(--accent-2); }
-.limit-pct.na { font-size: 15px; color: var(--muted); font-weight: 400; }
-.panel-today { flex: 1.2; display: flex; flex-direction: column; }
-.today-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 10px; }
-.stat b { display: block; font-size: 26px; font-weight: 800; line-height: 1.1; }
-.stat span { font-size: 13px; color: var(--muted); }
-.timeline-head { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-top: 4px; }
-.timeline { display: flex; align-items: flex-end; gap: 4px; flex: 1; min-height: 50px; margin-top: 6px; }
-.timeline .tb { flex: 1; background: var(--accent-2); min-height: 3px; cursor: pointer; }
-.timeline .tb.now { background: var(--accent); }
-.timeline .tb.empty { background: var(--border); }
-.timeline-labels { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-top: 4px; }
-.panel-system { flex: 1; display: flex; flex-direction: column; gap: 8px; min-height: 130px; }
-.sys-line { font-size: 14px; color: var(--muted); display: flex; justify-content: space-between; gap: 12px; }
-.sys-line b { color: var(--text); font-weight: 400; }
-.spark { flex: 1; width: 100%; min-height: 36px; }
-.spark polyline { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
-.spark .cpu { stroke: var(--cyan); }
-.spark .gpu { stroke: var(--gpu); }
-.spark .fill { fill: rgba(139,233,253,.12); stroke: none; }
-.spark-legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); }
-.spark-legend span { display: inline-flex; align-items: center; gap: 6px; }
-.spark-legend span:last-child { margin-left: auto; }
-.sw { width: 12px; height: 3px; display: inline-block; }
-.sw-cpu { background: var(--cyan); }
-.sw-gpu { background: var(--gpu); }
+.limit-pct.na { width: auto; font-size: 15px; color: var(--muted); font-weight: 400; }
+.limit-main { flex: 1; min-width: 0; }
+.limit-row { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--muted); margin-bottom: 4px; white-space: nowrap; }
+.limit-label { color: var(--text); text-transform: lowercase; }
+.limit-reset { overflow: hidden; text-overflow: ellipsis; }
+/* pace projection after the reset time: amber when the window fills before it resets */
+.limit-pace::before { content: " · "; color: var(--muted); }
+.limit-pace.warn { color: var(--accent-2); }
+.today { display: flex; gap: 20px; border-left: 1px dashed var(--border); padding-left: 28px; font-size: 13px; color: var(--muted); }
+.stat b { display: block; font-size: 24px; font-weight: 800; line-height: 1.1; color: var(--text); }
 
-/* ---------- column 3 ---------- */
-.panel-sessions { flex: 1; display: flex; flex-direction: column; }
-/* Exactly four cards (EDGEBOARD_SESSIONS_SHOWN), two by two, each large enough to read across the room. */
+/* ---------- centre: sessions ---------- */
+.panel-sessions { flex: 1; display: flex; flex-direction: column; padding: 20px 18px 16px; }
+/* Exactly four cards (EDGEBOARD_SESSIONS_SHOWN) in one row, each large enough to read across the room. */
 .sessions {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-template-rows: repeat(2, minmax(0, 1fr));
-  gap: 14px; flex: 1; min-height: 0; overflow: hidden;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+  gap: 16px; flex: 1; min-height: 0; overflow: hidden;
 }
 .card {
   background: var(--bg); border: 1px solid var(--border);
-  padding: 16px 20px; display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: hidden;
+  padding: 12px 16px 10px; display: flex; flex-direction: column; gap: 7px; min-height: 0; overflow: hidden;
   cursor: pointer;  /* tap opens the detail overlay */
 }
 .card:active { background: var(--panel-2); }
@@ -197,8 +191,12 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 .card.alert { animation: card-flash .35s 4; border-color: var(--accent-2); box-shadow: inset 0 0 0 1px var(--accent-2); }
 .card.attention.alert { border-color: var(--pink); box-shadow: inset 0 0 0 1px var(--pink); }
 @keyframes card-flash { 50% { background: var(--panel-2); border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); } }
-.card-top { display: flex; justify-content: space-between; align-items: baseline; font-size: 16px; }
-.pill { font-weight: 400; }
+/* head: status and age on the left, project@branch on the right */
+.card-top { display: flex; align-items: baseline; gap: 8px; font-size: 13px; line-height: 1.3; }
+.card-ago { color: var(--muted); }
+.card-proj { margin-left: auto; min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-proj b { color: var(--pink); font-weight: 400; }
+.pill { font-weight: 700; }
 .pill::before { content: "●"; margin-right: .45em; }
 .idle .pill::before { content: "○"; }
 .done .pill::before { content: "✓"; }
@@ -210,43 +208,54 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 .idle .pill { color: var(--muted); }
 .done .pill { color: var(--done); }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
-.card-title { flex: 0 0 auto; font-weight: 700; font-size: 22px; line-height: 1.2; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.card-title { flex: 0 0 auto; font-weight: 700; font-size: 18px; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .card-title::before { content: "❯ "; color: var(--ok); }
-.card-proj { font-size: 16px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.card-proj b { color: var(--pink); font-weight: 400; }
-/* body: task progress + the last reply, taking whatever height is left above the detail line */
-.card-body { flex: 1 1 auto; min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 6px; }
-.card-tasks { display: flex; align-items: center; gap: 10px; flex: none; font-size: 16px; white-space: nowrap; overflow: hidden; }
-.card-tasks .bar-mini { width: 72px; }
+/* body: task progress, your last prompt and the last reply, taking whatever height is left above the "now" line;
+   app.js sets the reply's line clamp to the whole lines that fit (fitReply) */
+.card-body { flex: 1 1 auto; min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 4px; }
+.card-tasks { display: flex; align-items: center; gap: 8px; flex: none; font-size: 13px; white-space: nowrap; overflow: hidden; }
+.card-tasks .bar-mini { width: 56px; height: 9px; }
 .card-tasks-text { overflow: hidden; text-overflow: ellipsis; }
-.card-reply { font-size: 16px; line-height: 1.35; color: var(--muted); overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
-.card-tasks:not([hidden]) + .card-reply { -webkit-line-clamp: 2; }   /* whole lines only: the task row takes one */
-.card-detail { font-size: 17px; color: var(--muted); margin-top: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.attention .card-detail { color: var(--pink); }
+.card-prompt { flex: none; font-size: 13px; line-height: 1.4; color: var(--accent-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-prompt::before { content: "you ❯ "; color: var(--muted); }
+.card-reply { font-size: 14px; line-height: 1.4; color: var(--text-2); overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+/* the "now" line: the running tool, the question, or what it waits for; the loudest line of a working card */
+.card-detail { font-size: 15px; line-height: 1.3; color: var(--text); margin-top: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.idle .card-detail, .done .card-detail { color: var(--muted); }
+.attention .card-detail { color: var(--pink); white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }   /* a question gets two lines */
 /* action row: option buttons for a pending question (attention) or preset follow-ups (idle); one finger-sized row, never wraps */
 .card-actions { display: flex; gap: 8px; flex: none; overflow: hidden; white-space: nowrap; }
-.card-actions button { min-height: 46px; }
+.card-actions button { min-height: 44px; }
 .act {
-  min-height: 46px; padding: 0 16px; font: inherit; font-size: 17px; color: var(--text);
+  min-height: 44px; padding: 0 14px; font: inherit; font-size: 15px; color: var(--text);
   background: var(--panel-2); border: 1px solid var(--border); cursor: pointer;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0;
   transition: transform .08s ease, background .15s ease;
 }
 .act:active { transform: scale(.96); background: var(--border); }
 .attention .card-actions .act { border-color: var(--pink); }
-.act.terminal { color: var(--muted); border-style: dashed; margin-left: auto; flex: none; }
+.act.terminal { color: var(--muted); border-style: dashed; margin-left: auto; flex: none; padding: 0 12px; }
 .act.busy { opacity: .5; pointer-events: none; }
 .act.sent { border-color: var(--ok); color: var(--ok); pointer-events: none; }
-.card-foot { display: flex; flex-wrap: nowrap; gap: 0 8px; font-size: 15px; color: var(--muted); overflow: hidden; }   /* one line; the message count at the end is what gets cut */
+/* figures: a 2x2 grid behind a dashed rule (like the rail's system figures); the same cell on every card holds the same figure
+   model · mode        | up 1h 12m · 34 msgs
+   ctx 251k ▮▮▮▯ 25% ⟲1 | 2/3 agents · 2 commits */
+.card-meta { flex: none; display: grid; grid-template-columns: 1fr 1fr; column-gap: 12px; row-gap: 3px; border-top: 1px dashed var(--border); padding-top: 7px; font-size: 13px; line-height: 1.3; color: var(--muted); }
+.card-meta .cell { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-meta b { color: var(--text); font-weight: 400; }
 .tag { white-space: nowrap; }
-.tag + .tag::before { content: "·"; margin-right: 6px; }
+.card-meta .tag:not([hidden]) ~ .tag:not([hidden])::before { content: "·"; margin: 0 6px; }
 .tag.model { color: var(--cyan); }
+.card-mode { color: var(--text); }
+.card-up, .card-msgs { color: var(--text); }
 /* context gauge: "ctx 197k ▮▮▮▮▯ 98% ⟲2" */
-.tag.card-ctx { display: inline-flex; align-items: center; gap: 5px; }
-.tag.card-ctx .bar-mini { width: 40px; height: 9px; }
+.card-ctx { display: inline-flex; align-items: center; gap: 5px; }
+.card-ctx .bar-mini { width: 40px; height: 9px; }
 .card-compact { color: var(--done); }
-.tag.card-agents.active { color: var(--accent); }   /* a subagent wrote in the last minute */
+.card-agents, .card-commits { color: var(--text); }
+.card-agents.active { color: var(--accent); }   /* a subagent wrote in the last minute */
 .sessions-empty { color: var(--muted); text-align: center; padding: 40px 0; }
+.needs-you { color: var(--pink); }
 
 /* session detail overlay: full height, the card's colours, dismissed by tapping the backdrop or after 20 s */
 .overlay { position: fixed; inset: 0; z-index: 20; display: flex; justify-content: center; padding: 18px; background: rgba(21, 22, 29, .82); }
@@ -292,54 +301,89 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 }
 .ov-compose input:focus { border-color: var(--accent); }
 
-/* ---------- column 4 ---------- */
-.panel-spotify { flex: 1; display: flex; flex-direction: column; gap: 12px; min-height: 0; }
-.np { display: flex; gap: 16px; align-items: center; }
-.art-wrap { width: 150px; height: 150px; flex: none; overflow: hidden; background: var(--panel-2); border: 1px solid var(--border); position: relative; }
+/* ---------- centre: activity / system / git row ---------- */
+.bottom-row { flex: none; height: 168px; display: grid; grid-template-columns: 1.1fr .9fr 1fr; gap: 18px; min-width: 0; }
+.bottom-row .panel { padding: 20px 18px 12px; display: flex; flex-direction: column; min-height: 0; }   /* no overflow clip here: the head hangs over the border */
+/* 24 h burn as a smooth amber curve; tapping it reads the hour under the finger */
+.burn { flex: 1; width: 100%; min-height: 0; cursor: pointer; }
+.burn-area { fill: rgba(255, 159, 28, .16); }
+.burn-line { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.timeline-labels { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-top: 5px; }
+.panel-system { gap: 8px; }
+.spark { flex: 1; width: 100%; min-height: 0; }
+.spark polyline { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.spark .cpu { stroke: var(--cyan); }
+.spark .gpu { stroke: var(--gpu); }
+.spark .fill { fill: rgba(139, 233, 253, .10); stroke: none; }
+.spark-legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); }
+.spark-legend > span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.spark-legend > span:last-child { margin-left: auto; }
+.sw { width: 12px; height: 3px; display: inline-block; }
+.sw-cpu { background: var(--cyan); }
+.sw-gpu { background: var(--gpu); }
+/* today's commits across the sessions' repositories: hash, repo, subject, age */
+.panel-git { gap: 7px; }
+.commits { display: flex; flex-direction: column; gap: 7px; min-height: 0; overflow: hidden; }
+.commit { display: flex; gap: 10px; align-items: baseline; font-size: 15px; white-space: nowrap; overflow: hidden; flex: none; }
+.c-hash { color: var(--accent); }
+.c-repo { color: var(--pink); }
+.c-msg { overflow: hidden; text-overflow: ellipsis; }
+.c-ago { color: var(--muted); margin-left: auto; }
+.git-add { color: var(--ok); }
+.git-del { color: var(--bad); }
+.git-empty { font-size: 13px; color: var(--muted); }
+
+/* ---------- spotify ---------- */
+/* The cover over the centred track, the seek bar, one low transport row and
+   the volume; the queue gets what is left, enough for the next track (two or
+   three with a one-line title). Tap targets keep finger height. */
+.panel-spotify { flex: 1; display: flex; flex-direction: column; gap: 12px; min-height: 0; padding: 20px 18px 14px; }
+.art-wrap { width: 200px; height: 200px; flex: none; align-self: center; overflow: hidden; background: var(--panel-2); border: 1px solid var(--border); position: relative; }
 .art { width: 100%; height: 100%; object-fit: cover; display: block; }
-.art-placeholder { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 56px; color: var(--muted); background: linear-gradient(135deg, #2a2b38, #1a1b24); }
-.np-text { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
-.np-title { font-weight: 700; font-size: 23px; line-height: 1.2; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.np-artist { font-size: 17px; color: var(--accent-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.np-album { font-size: 14px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.art-placeholder { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 64px; color: var(--muted); background: linear-gradient(135deg, #2a2b38, #1a1b24); }
+.np-text { text-align: center; min-width: 0; }
+.np-title { font-weight: 700; font-size: 24px; line-height: 1.2; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.np-sub { font-size: 16px; color: var(--accent-2); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.np-album { color: var(--muted); }
+.np-album:not(:empty)::before { content: " · "; }
 /* seekable: tall enough for a finger, shows the target time while pressed */
 .progress { height: 28px; overflow: hidden; position: relative; cursor: pointer; touch-action: none; background: repeating-linear-gradient(90deg, var(--border) 0 6px, transparent 6px 9px); }
 .progress-fill { height: 100%; width: 0; transition: width 1s linear; background: repeating-linear-gradient(90deg, var(--ok) 0 6px, var(--bg) 6px 9px); }
 .progress.seeking .progress-fill { transition: none; }
 .panel-spotify.paused .progress-fill { background: repeating-linear-gradient(90deg, var(--muted) 0 6px, var(--bg) 6px 9px); }
-.seek-target { position: absolute; top: 0; bottom: 0; transform: translateX(-50%); display: flex; align-items: center; padding: 0 8px; font-size: 14px; font-weight: 700; color: var(--bg); background: var(--accent); pointer-events: none; }
-.np-times { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-top: -6px; }
-/* volume: the same dashed bar as the track progress, only lower; the fill follows the finger */
-.volume { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
-.vol-icon { color: var(--ok); }
-.progress-vol { flex: 1; height: 14px; }
-.progress-vol .progress-fill { transition: none; }
-.panel-spotify.paused .progress-vol .progress-fill { background: repeating-linear-gradient(90deg, var(--ok) 0 6px, var(--bg) 6px 9px); }
-.volume #np-volume-pct { width: 4ch; text-align: right; }
-.panel-spotify.offline .volume { opacity: .35; pointer-events: none; }
-.controls { display: grid; grid-template-columns: 1fr 1.4fr 1fr; gap: 12px; }
+.seek-target { position: absolute; top: 0; bottom: 0; transform: translateX(-50%); display: flex; align-items: center; padding: 0 8px; font-size: 13px; font-weight: 700; color: var(--bg); background: var(--accent); pointer-events: none; }
+.np-times { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-top: -8px; }
+/* one low row: previous | play (wider, amber) | next */
+.controls { display: grid; grid-template-columns: 1fr 1.4fr 1fr; gap: 8px; }
 .ctl {
-  height: 64px; font-size: 26px; border: 1px solid var(--border);
+  height: 44px; font-size: 20px; border: 1px solid var(--border);
   background: var(--panel-2); color: var(--text); font-family: inherit; cursor: pointer;
   transition: transform .08s ease, background .15s ease;
 }
 .ctl:active { transform: scale(.94); background: var(--border); }
-.ctl-main { background: var(--accent); color: var(--bg); border-color: var(--accent); font-size: 28px; font-weight: 800; }
+.ctl-main { background: var(--accent); color: var(--bg); border-color: var(--accent); font-size: 22px; font-weight: 800; }
 .ctl-main:active { background: var(--accent-2); }
 .panel-spotify.offline .ctl { opacity: .35; pointer-events: none; }
+/* volume: the same dashed bar as the track progress, only lower; the fill follows the finger */
+.volume { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+.vol-icon { color: var(--ok); }
+.progress-vol { flex: 1; height: 16px; }
+.progress-vol .progress-fill { transition: none; }
+.panel-spotify.paused .progress-vol .progress-fill { background: repeating-linear-gradient(90deg, var(--ok) 0 6px, var(--bg) 6px 9px); }
+.volume #np-volume-pct { width: 4ch; text-align: right; }
+.panel-spotify.offline .volume { opacity: .35; pointer-events: none; }
 
-/* play queue: a numbered list in the space the system meters used to take */
-.queue-head { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-top: 4px; }
+/* play queue under the player */
+.queue-head { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); }
 .queue-head > span:first-child::before { content: "❯ "; color: var(--ok); }
 /* scrolls (touch) and each row is a tap target that skips to that track */
 .queue { list-style: none; margin: 0; padding: 0; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; display: flex; flex-direction: column; }
 .queue::-webkit-scrollbar { display: none; }
-.queue li { display: grid; grid-template-columns: 26px 1fr auto; column-gap: 10px; align-items: baseline; padding: 8px 4px; border-top: 1px dashed var(--border); flex: none; cursor: pointer; transition: background .15s ease; }
-.queue li:first-child { border-top: 0; }
+.queue li { display: grid; grid-template-columns: 26px 1fr auto; column-gap: 10px; align-items: baseline; padding: 7px 4px; border-top: 1px dashed var(--border); flex: none; cursor: pointer; transition: background .15s ease; }
 .queue li:active { background: var(--panel-2); }
 .queue .q-n { font-size: 13px; color: var(--muted); text-align: right; }
 .queue .q-main { min-width: 0; }
-.queue .q-title { font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.queue .q-title { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .queue .q-artist { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .queue .q-len { font-size: 13px; color: var(--muted); }
 .queue-empty { flex: 1; font-size: 13px; color: var(--muted); line-height: 1.4; padding-top: 8px; }
