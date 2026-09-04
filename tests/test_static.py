@@ -184,3 +184,13 @@ def test_page_reloads_itself_when_the_server_build_changes():
     assert 'src="/static/app.js?v=__BUILD__"' in html and 'href="/static/style.css?v=__BUILD__"' in html
     root_js = js.split("// ---------- render root ----------")[1].split("// ---------- transport ----------")[0]
     assert "snap.version" in root_js and "location.reload()" in root_js
+
+
+def test_limits_update_in_place():
+    # Rebuilding the Limits pane every second threw away the bar's width transition
+    # and churned the DOM; like the session cards it now keeps one node per window.
+    js = (STATIC / "app.js").read_text()
+    usage_js = js.split("// ---------- usage ----------")[1].split("// ---------- sessions ----------")[0]
+    assert 'limits.innerHTML = ""' not in usage_js
+    assert "limitNodes" in usage_js and "LIMIT_HTML" in usage_js
+    assert 'querySelector(".bar-fill")' in usage_js and "fill.style.width" in usage_js
