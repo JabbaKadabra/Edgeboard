@@ -1,7 +1,8 @@
 """Pure parsing of Claude Code transcript files (JSONL, one per session).
 
-Nothing in here touches the network or D-Bus; the only I/O helper is
-``read_tail`` which reads the end of a file.
+Nothing in here touches the network or D-Bus; the only I/O helpers read
+parts of a file (``read_tail``, ``read_head``, ``read_transcript`` and
+``read_new_lines`` for append-only parsing).
 """
 
 from __future__ import annotations
@@ -123,6 +124,22 @@ def read_transcript_bytes(path: Path, full_limit: int = 4_000_000, head_bytes: i
     return read_head_bytes(path, head_bytes) + b"\n" + read_tail_bytes(path, tail_bytes)
 
 
+def read_new_lines(path: Path, start: int, end: int) -> tuple[str, int]:
+    """The complete lines in ``[start, end)`` of an append-only file and the offset after them.
+
+    Transcripts only grow, so a poll parses just the bytes written since the
+    last one. A trailing partial line (the writer is mid-line) is left for the
+    next call: the returned offset always sits on a line boundary.
+    """
+    with path.open("rb") as fh:
+        fh.seek(start)
+        data = fh.read(end - start)
+    cut = data.rfind(b"\n") + 1
+    if cut == 0:
+        return "", start
+    return data[:cut].decode("utf-8", errors="replace"), start + cut
+
+
 def short_model(name: str) -> str:
     """``claude-fable-5-1`` -> ``fable-5-1``; drops trailing date stamps."""
     if not name:
@@ -220,39 +237,56 @@ def _int(value) -> int:
         return 0
 
 
-def usage_events(entries: Iterable[dict]) -> list[UsageEvent]:
-    """Usage per assistant message, de-duplicated by message id.
+class UsageParser:
+    """Incremental ``UsageEvent`` collector: feed entries as the transcript grows.
 
     Claude Code writes the same assistant message several times while
-    streaming; the last occurrence carries the final numbers.
+    streaming; the last occurrence carries the final numbers, so events are
+    de-duplicated by message id and keep the position of their first sighting.
     """
-    by_id: dict[str, UsageEvent] = {}
-    order: list[str] = []
-    for index, entry in enumerate(entries):
-        try:
-            if entry.get("type") != "assistant":
-                continue
-            message = _message(entry)
-            usage = message.get("usage")
-            if not isinstance(usage, dict):
-                continue
-            ts = parse_ts(entry.get("timestamp"))
-            if ts is None:
-                continue
-            msg_id = str(message.get("id") or entry.get("requestId") or entry.get("uuid") or f"#{index}")
-            if msg_id not in by_id:
-                order.append(msg_id)
-            by_id[msg_id] = UsageEvent(
-                ts=ts,
-                model=str(message.get("model") or ""),
-                input=_int(usage.get("input_tokens")),
-                output=_int(usage.get("output_tokens")),
-                cache_read=_int(usage.get("cache_read_input_tokens")),
-                cache_write=_int(usage.get("cache_creation_input_tokens")),
-            )
-        except (AttributeError, TypeError, ValueError):
-            continue  # one mis-shaped line must not take the whole file down
-    return [by_id[k] for k in order]
+
+    def __init__(self) -> None:
+        self._by_id: dict[str, UsageEvent] = {}
+        self._order: list[str] = []
+        self._index = 0
+
+    @property
+    def events(self) -> list[UsageEvent]:
+        return [self._by_id[k] for k in self._order]
+
+    def feed(self, entries: Iterable[dict]) -> list[UsageEvent]:
+        for entry in entries:
+            index = self._index
+            self._index += 1
+            try:
+                if entry.get("type") != "assistant":
+                    continue
+                message = _message(entry)
+                usage = message.get("usage")
+                if not isinstance(usage, dict):
+                    continue
+                ts = parse_ts(entry.get("timestamp"))
+                if ts is None:
+                    continue
+                msg_id = str(message.get("id") or entry.get("requestId") or entry.get("uuid") or f"#{index}")
+                if msg_id not in self._by_id:
+                    self._order.append(msg_id)
+                self._by_id[msg_id] = UsageEvent(
+                    ts=ts,
+                    model=str(message.get("model") or ""),
+                    input=_int(usage.get("input_tokens")),
+                    output=_int(usage.get("output_tokens")),
+                    cache_read=_int(usage.get("cache_read_input_tokens")),
+                    cache_write=_int(usage.get("cache_creation_input_tokens")),
+                )
+            except (AttributeError, TypeError, ValueError):
+                continue  # one mis-shaped line must not take the whole file down
+        return self.events
+
+
+def usage_events(entries: Iterable[dict]) -> list[UsageEvent]:
+    """Usage per assistant message, de-duplicated by message id (see ``UsageParser``)."""
+    return UsageParser().feed(entries)
 
 
 class SessionParser:

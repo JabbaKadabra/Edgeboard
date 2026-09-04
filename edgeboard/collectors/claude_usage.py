@@ -15,7 +15,7 @@ from typing import Iterable
 
 import httpx
 
-from edgeboard.collectors.claude_transcripts import UsageEvent, iter_entries, usage_events
+from edgeboard.collectors.claude_transcripts import UsageEvent, UsageParser, iter_entries, read_new_lines
 
 LABELS = {
     "five_hour": "5-hour",
@@ -272,9 +272,20 @@ async def fetch_usage(client: httpx.AsyncClient, token: str, url: str) -> dict:
 TRANSCRIPT_GLOBS = ("*/*.jsonl", "*/*/subagents/*.jsonl")
 
 
-# Usage events per transcript, keyed by (mtime_ns, size) so an unchanged file
-# is not re-read on every timeline poll.
-_events_cache: dict[Path, tuple[tuple[int, int], list[UsageEvent]]] = {}
+# Parser state per transcript, keyed by (mtime_ns, size). Transcripts are
+# append-only: a file that only grew since the last poll has just its new
+# bytes parsed (a live session's transcript changes every few seconds and
+# can be tens of MB), an unchanged one yields the cached events, and one
+# that shrank or was replaced is parsed again. ``offset`` is how far the
+# parser has consumed, always at a line boundary.
+@dataclass
+class _Cached:
+    key: tuple[int, int]
+    parser: UsageParser
+    offset: int
+
+
+_events_cache: dict[Path, _Cached] = {}
 
 
 def _file_events(path: Path) -> list[UsageEvent] | None:
@@ -282,13 +293,22 @@ def _file_events(path: Path) -> list[UsageEvent] | None:
         st = path.stat()
         key = (st.st_mtime_ns, st.st_size)
         cached = _events_cache.get(path)
-        if cached is not None and cached[0] == key:
-            return cached[1]
-        text = path.read_text(encoding="utf-8", errors="replace")
+        if cached is not None and cached.key == key:
+            return cached.parser.events
+        if cached is not None and st.st_size >= cached.offset:
+            text, cached.offset = read_new_lines(path, cached.offset, st.st_size)
+            cached.key = key
+            if text:
+                cached.parser.feed(iter_entries(text))
+            return cached.parser.events
+        data = path.read_bytes()
     except OSError:
         return None
-    events = usage_events(iter_entries(text))
-    _events_cache[path] = (key, events)
+    parser = UsageParser()
+    events = parser.feed(iter_entries(data.decode("utf-8", errors="replace")))
+    # An unterminated last line was fed for freshness but is re-read once complete.
+    unterminated = len(data) - (data.rfind(b"\n") + 1)
+    _events_cache[path] = _Cached(key, parser, st.st_size - unterminated)
     return events
 
 

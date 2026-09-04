@@ -195,3 +195,15 @@ def test_permission_mode_comes_from_the_latest_user_prompt():
     )
     assert session_facts(iter_entries(text)).permission_mode == "plan"
     assert session_facts(iter_entries(user_line("hi"))).permission_mode == ""
+
+
+def test_usage_parser_is_incremental_across_feeds():
+    from edgeboard.collectors.claude_transcripts import UsageParser
+
+    parser = UsageParser()
+    parser.feed(iter_entries("\n".join([user_line("q"), assistant_line("msg_1", output_tokens=5, when=ts(1))])))
+    assert [e.output for e in parser.events] == [5]
+    # the same message id streamed again in a later batch replaces the earlier reading in place
+    parser.feed(iter_entries("\n".join([assistant_line("msg_1", output_tokens=50, when=ts(0.9)), assistant_line("msg_2", output_tokens=7, when=ts(0.5))])))
+    assert [e.output for e in parser.events] == [50, 7]
+    assert usage_events(iter_entries("\n".join([assistant_line("msg_1", output_tokens=5), assistant_line("msg_1", output_tokens=50)])))[0].output == 50
