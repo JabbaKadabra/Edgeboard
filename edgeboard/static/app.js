@@ -323,7 +323,7 @@
       </div>
       <div class="card-detail"></div>
       <div class="card-actions" hidden></div>
-      <div class="card-foot"><span class="tag model" hidden></span><span class="tag card-ctx"><span class="card-ctx-text"></span><span class="bar bar-mini"><span class="bar-fill"></span></span><span class="card-ctx-pct"></span><span class="card-compact" hidden></span></span><span class="tag card-msgs"></span><span class="tag card-agents" hidden></span></div>`;
+      <div class="card-foot"><span class="tag model" hidden></span><span class="tag card-ctx"><span class="card-ctx-text"></span><span class="bar bar-mini"><span class="bar-fill"></span></span><span class="card-ctx-pct"></span><span class="card-compact" hidden></span></span><span class="tag card-agents" hidden></span><span class="tag card-msgs"></span></div>`;
   const cardNodes = new Map();
   // Action row of a card (and the preset row of the overlay). Rebuilt only when
   // its key changes so a tap never lands on a freshly re-created button.

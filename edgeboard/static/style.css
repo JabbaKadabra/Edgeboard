@@ -220,6 +220,7 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 .card-tasks .bar-mini { width: 72px; }
 .card-tasks-text { overflow: hidden; text-overflow: ellipsis; }
 .card-reply { font-size: 16px; line-height: 1.35; color: var(--muted); overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.card-tasks:not([hidden]) + .card-reply { -webkit-line-clamp: 2; }   /* whole lines only: the task row takes one */
 .card-detail { font-size: 17px; color: var(--muted); margin-top: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .attention .card-detail { color: var(--pink); }
 /* action row: option buttons for a pending question (attention) or preset follow-ups (idle); one finger-sized row, never wraps */
@@ -236,13 +237,13 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 .act.terminal { color: var(--muted); border-style: dashed; margin-left: auto; flex: none; }
 .act.busy { opacity: .5; pointer-events: none; }
 .act.sent { border-color: var(--ok); color: var(--ok); pointer-events: none; }
-.card-foot { display: flex; flex-wrap: wrap; gap: 0 8px; font-size: 15px; color: var(--muted); }
+.card-foot { display: flex; flex-wrap: nowrap; gap: 0 8px; font-size: 15px; color: var(--muted); overflow: hidden; }   /* one line; the message count at the end is what gets cut */
 .tag { white-space: nowrap; }
 .tag + .tag::before { content: "·"; margin-right: 6px; }
 .tag.model { color: var(--cyan); }
 /* context gauge: "ctx 197k ▮▮▮▮▯ 98% ⟲2" */
-.tag.card-ctx { display: inline-flex; align-items: center; gap: 6px; }
-.tag.card-ctx .bar-mini { width: 48px; height: 9px; }
+.tag.card-ctx { display: inline-flex; align-items: center; gap: 5px; }
+.tag.card-ctx .bar-mini { width: 40px; height: 9px; }
 .card-compact { color: var(--done); }
 .tag.card-agents.active { color: var(--accent); }   /* a subagent wrote in the last minute */
 .sessions-empty { color: var(--muted); text-align: center; padding: 40px 0; }

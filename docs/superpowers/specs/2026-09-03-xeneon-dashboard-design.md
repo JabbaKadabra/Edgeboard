@@ -129,6 +129,7 @@ Status classification from the transcript tail:
 |---------------------------------------|-------|---------|------------------------|
 | user prompt (text, no tool_result)    | yes   | working | working on your prompt |
 | user tool_result                      | yes   | working | thinking               |
+| assistant, tool_use of AskUserQuestion | yes  | attention | answer in the terminal (the question itself is on the card; see below) |
 | assistant, stop_reason = tool_use     | yes   | working | running `<cmd>` / reading `<file>` / editing `<file>` / writing `<file>` / searching `"<pattern>"` / agent: `<description>`; `running <Tool>` without a hint; `running tool` without a tool |
 | assistant, end_turn, active subagent  | yes   | working | agents running         |
 | assistant, stop_reason = end_turn     | yes   | idle    | waiting for you        |
@@ -153,23 +154,46 @@ assistant text block) and `waiting_since` (the hook's receipt time, else
 the last activity, only while idle or attention). The transcript also
 yields `permission_mode` (latest user prompt's `permissionMode`).
 
+The transcript itself also carries a pending question: the assistant
+`tool_use` block of `AskUserQuestion` (its `id` and `input`, flattened by
+the same `flatten_question()`), cleared by the `tool_result` that answers it.
+`question` therefore exists with or without hooks and carries `answerable`:
+true only while a fresh `PreToolUse` hook is waiting on `/api/answer`, false
+for the transcript copy (or once the hook gave up), in which case the card
+shows the question and its options read-only with "answer in the terminal".
+
 Title: the latest `summary` line if any, else the first user prompt's first
 line with `<system-reminder>` and similar tags stripped, truncated to 60
 characters. Project = last path component of `cwd`. Model string is
-shortened (`claude-fable-5-1` → `fable-5-1`). Context tokens = last
-assistant `input + cache_read + cache_creation`.
+shortened (`claude-fable-5-1` → `fable-5-1`; a `[1m]` marker stays).
+Context tokens = last assistant `input + cache_read + cache_creation`;
+`context_window` is 1,000,000 for `[1m]` models, else
+`EDGEBOARD_CONTEXT_WINDOW` (200k), and `context_pct` their ratio. The
+`system` / `compact_boundary` lines Claude Code writes when it compacts give
+`compactions`, `last_compact_at` and `last_compact_trigger` (`auto`,
+`manual`). Live sessions also get `tasks = {total, done, current}` from
+`~/.claude/tasks/<session-id>/<n>.json` (`summarize_tasks()`: `done` counts
+`completed`, `current` is the `activeForm` or `subject` of the first
+`in_progress` task, else of the first unfinished one), null without tasks.
 
 Summary counters: sessions today, done today, working now, idle, attention.
 The page gets only the first `sessions_shown` (4) sessions after sorting
 (attention, working, idle, done); the counters cover all.
 
-Cards show the detail line and, in the foot, an `N agents` badge (`a/N` in
-amber while `a` are active). Tapping a card opens a full-height overlay
-(markup in `index.html`, refilled from every snapshot) with the full title,
-cwd, branch, model, start time and duration, last activity, message count,
-context tokens, agents, permission mode, waiting time, the last prompt and
-reply; it closes on a backdrop tap, after 20 s (restarted by any tap inside),
-or when the session leaves the snapshot.
+Cards show, between the project line and the detail line, the task
+progress (`3/7 tasks · <current>` with a mini bar) and up to three lines of
+the last reply (two when there are tasks; a pending question replaces the
+reply since the detail line already shows it), then the detail line and the
+foot: model, the context gauge (`ctx 197k` + a mini bar coloured by
+`settings.context_warn`: amber from 10 points below, red from the threshold,
++ `98%` + `⟲2` when compacted), an `N agents` badge (`a/N` in amber while
+`a` are active) and the message count, on one line. Tapping a card opens a
+full-height overlay (markup in `index.html`, refilled from every snapshot)
+with the full title, cwd, branch, model, start time and duration, last
+activity, message count, context tokens / window / % with the compactions,
+tasks, agents, permission mode, waiting time, the last prompt and reply; it
+closes on a backdrop tap, after 20 s (restarted by any tap inside), or when
+the session leaves the snapshot.
 
 Answering and sending: an *attention* card with a `question` shows the
 question text instead of the detail line and an action row: the options of
@@ -303,7 +327,7 @@ shows a hint instead of a list. Snapshot key `spotify_queue`.
   session's hook state becomes `UserPromptSubmit` so the card reads
   "working on your prompt" until the transcript catches up. Demo mode only
   mutates its canned sessions and never opens a socket.
-- Snapshot `settings` = `{alert_sound, presets: [{label, text}]}`.
+- Snapshot `settings` = `{alert_sound, presets: [{label, text}], context_warn}`.
 - Binds `127.0.0.1:8765` by default (`EDGEBOARD_HOST`, `EDGEBOARD_PORT`).
 
 ### Frontend
