@@ -31,7 +31,7 @@ def fill_demo(state: State) -> None:
         "updated_at": now.isoformat(),
     }
 
-    def session(i, name, status, detail, model, ctx, minutes, project="it-system-of-record", branch="master", agents=0, active_agents=0, question=None, can_send=False, reply=""):
+    def session(i, name, status, detail, model, ctx, minutes, project="it-system-of-record", branch="master", agents=0, active_agents=0, question=None, can_send=False, reply="", window=200_000, compactions=0, tasks=None):
         return {
             "id": f"demo-{i}",
             "name": name,
@@ -54,6 +54,12 @@ def fill_demo(state: State) -> None:
             "can_send": can_send,
             "waiting_since": (now - timedelta(minutes=minutes)).isoformat() if status in ("idle", "attention") else None,
             "question": question,
+            "context_window": window,
+            "context_pct": round(100 * ctx / window),
+            "compactions": compactions,
+            "last_compact_at": (now - timedelta(minutes=minutes + 12)).isoformat() if compactions else None,
+            "last_compact_trigger": "auto" if compactions else "",
+            "tasks": tasks,
         }
 
     question = {
@@ -67,10 +73,10 @@ def fill_demo(state: State) -> None:
     }
 
     state.sessions = [
-        session(1, "HR Dashboard Monday review", "attention", "asking you a question", "opus-5", 197_000, 0, question=question, can_send=True, reply="Two options remain for the rollout order; I need your call before I touch the deploy scripts."),
-        session(2, "UKG process repo organization", "working", "running pytest tests/ -q", "opus-5", 251_000, 2, can_send=True),
-        session(3, "Hazelwood Frost findings memo", "working", "agents running", "fable-5-1", 420_000, 1, agents=3, active_agents=2, can_send=True),
-        session(4, "ITOPS features gap analysis", "idle", "waiting for you", "opus-5", 304_000, 31, agents=1, can_send=True, reply="Gap analysis is drafted in docs/itops-gaps.md: 14 features, 5 blocking. Want me to open tickets for the blocking ones?"),
+        session(1, "HR Dashboard Monday review", "attention", "asking you a question", "opus-5", 197_000, 0, question=question, can_send=True, reply="Two options remain for the rollout order; I need your call before I touch the deploy scripts.", tasks={"total": 7, "done": 3, "current": "Reviewing the HR dashboard access rules"}),
+        session(2, "UKG process repo organization", "working", "running pytest tests/ -q", "opus-5[1m]", 251_000, 2, can_send=True, window=1_000_000, reply="Moved the UKG exports into ukg/exports/ and the loaders into ukg/load/; running the suite once more before I touch the cron entries.", tasks={"total": 5, "done": 5, "current": ""}),
+        session(3, "Hazelwood Frost findings memo", "working", "agents running", "fable-5-1[1m]", 420_000, 1, agents=3, active_agents=2, can_send=True, window=1_000_000, compactions=1, reply="Three reviewers are reading the findings in parallel; I will merge their notes into the memo's risk section."),
+        session(4, "ITOPS features gap analysis", "idle", "waiting for you", "opus-5[1m]", 304_000, 31, agents=1, can_send=True, window=1_000_000, reply="Gap analysis is drafted in docs/itops-gaps.md: 14 features, 5 blocking. Want me to open tickets for the blocking ones?", tasks={"total": 4, "done": 2, "current": "Open tickets for the blocking gaps"}),
     ][:4]
     state.sessions_summary = {"today": 21, "done": 5, "working": 2, "idle": 2, "attention": 1}
     state.spotify = {
