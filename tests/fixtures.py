@@ -85,3 +85,23 @@ def noise_lines() -> list[str]:
         "not json at all {",
         "",
     ]
+
+
+def compact_line(when: str | None = None, trigger: str = "auto", pre: int = 190_000, post: int = 12_000, **extra) -> str:
+    """The ``system`` line Claude Code writes when it compacts the conversation."""
+    entry = {
+        "type": "system",
+        "subtype": "compact_boundary",
+        "content": "Conversation compacted",
+        "level": "info",
+        "sessionId": SESSION,
+        "timestamp": when or ts(),
+        "compactMetadata": {"trigger": trigger, "preTokens": pre, "postTokens": post},
+    }
+    entry.update(extra)
+    return json.dumps(entry)
+
+
+def task_json(n: int, subject: str, status: str = "pending", active_form: str = "") -> str:
+    """One ``~/.claude/tasks/<session>/<n>.json`` file."""
+    return json.dumps({"id": str(n), "subject": subject, "description": "", "activeForm": active_form, "status": status, "blocks": [], "blockedBy": []})

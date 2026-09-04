@@ -60,6 +60,11 @@ class SessionFacts:
     # An AskUserQuestion Claude is waiting on (see ``flatten_question``): set by the
     # tool_use block, cleared by the tool_result that answers it.
     question: dict | None = None
+    # ``system`` / ``compact_boundary`` lines: how often the conversation was
+    # compacted, when the last one happened and what triggered it (auto, manual).
+    compactions: int = 0
+    last_compact_ts: datetime | None = None
+    last_compact_trigger: str = ""
 
 
 def parse_ts(value: str | None) -> datetime | None:
@@ -141,6 +146,11 @@ def read_new_lines(path: Path, start: int, end: int) -> tuple[str, int]:
     if cut == 0:
         return "", start
     return data[:cut].decode("utf-8", errors="replace"), start + cut
+
+
+def context_window_for(model: str, default: int) -> int:
+    """The model's context window: 1M for the ``[1m]`` variants Claude Code names that way, else ``default``."""
+    return 1_000_000 if "[1m]" in (model or "").lower() else default
 
 
 def short_model(name: str) -> str:
@@ -336,6 +346,14 @@ class SessionParser:
                 kind = entry.get("type")
                 if kind == "summary":
                     self._summary = str(entry.get("summary") or "")
+                    continue
+                if kind == "system":
+                    if entry.get("subtype") == "compact_boundary":
+                        facts.compactions += 1
+                        facts.last_compact_ts = parse_ts(entry.get("timestamp")) or facts.last_compact_ts
+                        meta = entry.get("compactMetadata")
+                        trigger = meta.get("trigger") if isinstance(meta, dict) else ""
+                        facts.last_compact_trigger = trigger if isinstance(trigger, str) else ""
                     continue
                 if kind not in ("user", "assistant"):
                     continue

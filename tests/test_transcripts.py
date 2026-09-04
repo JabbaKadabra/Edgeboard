@@ -245,3 +245,37 @@ def test_session_facts_question_is_pending_until_the_tool_result():
     assert session_facts(iter_entries(answered)).question is None
     moved_on = asked + "\n" + assistant_line("m2", text="ok")
     assert session_facts(iter_entries(moved_on)).question is None
+
+
+# ---------- context window and compactions ----------
+def test_context_window_for_reads_the_1m_marker():
+    from edgeboard.collectors.claude_transcripts import context_window_for
+
+    assert context_window_for("claude-opus-4-8[1m]", 200_000) == 1_000_000
+    assert context_window_for("claude-sonnet-5[1M]", 200_000) == 1_000_000
+    assert context_window_for("claude-fable-5-1", 200_000) == 200_000
+    assert context_window_for("", 200_000) == 200_000
+    assert short_model("claude-opus-4-8[1m]") == "opus-4-8[1m]"
+
+
+def test_session_facts_count_compactions():
+    from tests.fixtures import compact_line
+
+    text = "\n".join([user_line("q"), assistant_line("m1"), compact_line(when=ts(2), trigger="manual"), user_line("cont", uuid="u2"), compact_line(when=ts(1)), assistant_line("m2")])
+    facts = session_facts(iter_entries(text))
+    assert facts.compactions == 2
+    assert facts.last_compact_trigger == "auto"
+    assert facts.last_compact_ts.isoformat().startswith("2026-09-03T11:00")
+    assert facts.assistant_messages == 2 and facts.last_kind == "assistant"
+
+
+def test_other_system_lines_and_bare_compactions_are_tolerated():
+    import json
+
+    from tests.fixtures import compact_line
+
+    other = json.dumps({"type": "system", "subtype": "turn_duration", "durationMs": 5, "timestamp": ts()})
+    bare = json.dumps({"type": "system", "subtype": "compact_boundary", "timestamp": ts()})
+    facts = session_facts(iter_entries("\n".join([user_line("q"), other, bare, compact_line(compactMetadata="nope")])))
+    assert facts.compactions == 2 and facts.last_compact_trigger == ""
+    assert session_facts(iter_entries(other)).compactions == 0
