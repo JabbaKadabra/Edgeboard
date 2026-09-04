@@ -10,8 +10,11 @@ It shows, live:
 - **Claude Code sessions** – a card per session with title, project, branch,
   model, context size, subagent count, and whether it is working (and on
   which tool or file), idle, done, or waiting for you to approve a permission
-  or answer a question. Tap a card for the full title, path, timings and the
-  last prompt.
+  or answer a question. A question's options are on the card: tap one to
+  answer it, and tap a preset ("continue", "commit", "tests", …) to send an
+  idle session its next prompt. Tap the card itself for the full title, path,
+  timings, the last prompt and reply, every question, all presets and a
+  free-text line.
 - **Spotify** – current track with album art, a tap-to-seek progress bar, a
   volume slider, and touch controls for previous / play-pause / next (via
   MPRIS, no API keys). The "up next" list scrolls, and tapping a track skips
@@ -111,6 +114,8 @@ from `~/.claude/.credentials.json`.
 | `EDGEBOARD_DEMO`                | `0`                                      |
 | `EDGEBOARD_ALERT_SOUND`         | `0` (chime on the panel when a session needs you) |
 | `EDGEBOARD_ALERT_NOTIFY`        | `0` (`notify-send` on the desktop as well)        |
+| `EDGEBOARD_PRESETS`             | `label=text\|label=text` follow-up buttons for idle cards (see [Answering from the panel](#answering-from-the-panel)) |
+| `EDGEBOARD_ANSWER_WAIT`         | `90` seconds the hook waits for a tap on the panel before the terminal asks |
 | `EDGEBOARD_ENV_FILE`            | `.env` (relative to the working directory) |
 
 The server has no authentication and exposes session titles, project paths
@@ -139,44 +144,82 @@ the last 30 usage polls (about half an hour) since the window last reset.
 
 The transcript cannot tell that Claude is waiting for you to approve a
 permission or answer a question, and it only learns about a `Stop` a while
-later. Claude Code hooks can post those events straight to the dashboard.
+later. Claude Code hooks can post those events straight to the dashboard,
+and the same hook is what lets the panel answer questions (next section).
 Add this to `~/.claude/settings.json` (merge with any hooks you already have;
-change the port if you set `EDGEBOARD_PORT`):
+the script reads `EDGEBOARD_URL` from the environment, or takes `--url`, if
+you changed the port):
 
 ```json
 {
   "hooks": {
-    "Notification":     [{"hooks": [{"type": "command", "command": "curl -s -m 1 -X POST --data-binary @- http://127.0.0.1:8765/api/hook >/dev/null || true"}]}],
-    "PreToolUse":       [{"hooks": [{"type": "command", "command": "curl -s -m 1 -X POST --data-binary @- http://127.0.0.1:8765/api/hook >/dev/null || true"}]}],
-    "PostToolUse":      [{"hooks": [{"type": "command", "command": "curl -s -m 1 -X POST --data-binary @- http://127.0.0.1:8765/api/hook >/dev/null || true"}]}],
-    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "curl -s -m 1 -X POST --data-binary @- http://127.0.0.1:8765/api/hook >/dev/null || true"}]}],
-    "Stop":             [{"hooks": [{"type": "command", "command": "curl -s -m 1 -X POST --data-binary @- http://127.0.0.1:8765/api/hook >/dev/null || true"}]}],
-    "SessionStart":     [{"hooks": [{"type": "command", "command": "curl -s -m 1 -X POST --data-binary @- http://127.0.0.1:8765/api/hook >/dev/null || true"}]}]
+    "Notification":     [{"hooks": [{"type": "command", "command": "python3 $HOME/Dashboard/scripts/edgeboard-hook.py"}]}],
+    "PreToolUse":       [{"hooks": [{"type": "command", "command": "python3 $HOME/Dashboard/scripts/edgeboard-hook.py", "timeout": 120}]}],
+    "PostToolUse":      [{"hooks": [{"type": "command", "command": "python3 $HOME/Dashboard/scripts/edgeboard-hook.py"}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python3 $HOME/Dashboard/scripts/edgeboard-hook.py"}]}],
+    "Stop":             [{"hooks": [{"type": "command", "command": "python3 $HOME/Dashboard/scripts/edgeboard-hook.py"}]}],
+    "SessionStart":     [{"hooks": [{"type": "command", "command": "python3 $HOME/Dashboard/scripts/edgeboard-hook.py"}]}]
   }
 }
 ```
 
-`POST /api/hook` takes the JSON Claude Code passes to hooks on stdin
-(`session_id`, `hook_event_name`, `cwd`, plus the event's own fields) and
-keeps the latest event per session for 10 minutes. It overrides the
-transcript-derived status only while it is newer than the transcript's last
-line, so an approved permission (which writes a tool result) clears the
-"needs permission" card on its own:
+`scripts/edgeboard-hook.py` (standard library only) forwards the JSON Claude
+Code passes to hooks on stdin to `POST /api/hook`. The server keeps the
+latest event per session (`session_id`, `hook_event_name`, `cwd`, plus the
+event's own fields) for 10 minutes. It overrides the transcript-derived
+status only while it is newer than the transcript's last line, so an
+approved permission (which writes a tool result) clears the "needs
+permission" card on its own:
 
 | Event                                   | Card                              |
 |-----------------------------------------|-----------------------------------|
 | `Notification` / `permission_prompt`    | **attention** · needs permission  |
 | `Notification` / `elicitation_dialog`   | **attention** · needs your input  |
-| `PreToolUse` / `AskUserQuestion`        | **attention** · asking you a question |
+| `PreToolUse` / `AskUserQuestion`        | **attention** · the question, with its options as buttons |
 | `PreToolUse` / any other tool           | working · running `<command>`, editing `<file>`, … |
 | `PostToolUse`                           | working · thinking                |
 | `UserPromptSubmit`                      | working · working on your prompt  |
-| `Stop`, `Notification` / `idle_prompt`  | idle · waiting for you            |
+| `Stop`, `Notification` / `idle_prompt`  | idle · waiting for you (`Stop` also carries Claude's last reply) |
 | `SessionStart` (not `compact`)          | idle · session started            |
 
-The 1 s timeout and `|| true` keep Claude Code from stalling or reporting an
-error while the dashboard is down. Nothing is required: without hooks the
-cards fall back to what the transcript says.
+The script exits 0 without output whenever the dashboard is down or says
+nothing, so Claude Code never stalls or reports an error because of it.
+Nothing is required: without hooks the cards fall back to what the
+transcript says.
+
+## Answering from the panel
+
+Two things need no keyboard:
+
+**Questions.** When Claude calls `AskUserQuestion`, the `PreToolUse` hook
+above posts the question to the dashboard and then waits for your tap
+(`EDGEBOARD_ANSWER_WAIT`, 90 s by default; pass `--wait` to the script to
+override) by long-polling `GET /api/answer/<tool_use_id>`. The card shows
+the question with its options; a single-choice question is answered right
+on the card, a multi-part or multi-choice one through the overlay ("answer…").
+`POST /api/sessions/<id>/answer` resolves the wait and the script returns
+the answers to Claude Code as the tool's input, which skips the terminal
+dialog. While the hook waits the terminal shows only a hook spinner; the
+`terminal` button hands the question back to it at once, and so does the
+timeout. After that the card says "answer in the terminal". The hook entry
+needs `"timeout"` above the wait (120 s for the default 90 s) or Claude Code
+kills the script first.
+
+**Presets.** An idle session shows up to four buttons from
+`EDGEBOARD_PRESETS` (`label=text|label=text`; the overlay lists them all and
+adds a free-text line). `POST /api/sessions/<id>/send {text}` writes the
+text into the session's inbox socket, the same channel other Claude Code
+sessions use to message it (`messagingSocketPath` in
+`~/.claude/sessions/<pid>.json`, Claude Code 2.1.224 or newer), and the
+session starts a new turn with it. Slash commands do not run through that
+channel, so phrase presets as instructions: the default `commit` preset is
+"Use the /commit skill to commit the current work with a clear message."
+A session running with `--dangerously-skip-permissions` holds the message
+for approval in its terminal; sessions without a process (finished,
+`claude -p`, cloud) have no inbox and show no buttons.
+
+Everything the panel sends is plain text as if you had typed it; nothing
+approves a permission prompt on your behalf.
 
 ## Spotify queue
 

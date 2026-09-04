@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
-from edgeboard.collectors.claude_transcripts import SessionFacts, SessionParser, iter_entries, read_transcript_bytes, short_model, tool_hint
+from edgeboard.collectors.claude_transcripts import PROMPT_MAX, SessionFacts, SessionParser, clean_text, iter_entries, read_transcript_bytes, short_model, tool_hint
 from edgeboard.config import Settings
 
 ATTENTION = "attention"  # Claude is blocked on the user: a permission prompt or a question
@@ -53,6 +53,12 @@ class Session:
     agents: int = 0  # subagent transcripts under <project>/<session>/subagents/
     active_agents: int = 0  # of those, written in the last HEADLESS_ACTIVE_SECS
     last_prompt: str = ""
+    last_reply: str = ""  # what Claude last said (Stop hook, else the transcript)
+    permission_mode: str = ""
+    session_name: str = ""  # Claude Code's own name for the session (pid file ``name``)
+    can_send: bool = False  # alive with an inbox socket: POST /api/sessions/{id}/send works
+    waiting_since: str | None = None  # since when it has been idle / needing you
+    question: dict | None = None  # pending AskUserQuestion, see ``question_from_hook``
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -99,6 +105,11 @@ def hook_override(hook: dict) -> tuple[str, str] | None:
     if event == "PreToolUse":
         name = hook.get("tool_name") if isinstance(hook.get("tool_name"), str) else ""
         if name == "AskUserQuestion":
+            state = hook.get("question_state")
+            if state == "answered":
+                return WORKING, "thinking"  # answered from the panel, Claude is on it
+            if state == "abandoned":
+                return ATTENTION, "answer in the terminal"  # the hook gave up waiting for the panel
             return ATTENTION, "asking you a question"
         return WORKING, tool_detail(name, tool_hint(name, hook.get("tool_input")))
     if event == "PostToolUse":
@@ -112,24 +123,60 @@ def hook_override(hook: dict) -> tuple[str, str] | None:
     return None
 
 
-def apply_hook(current: tuple[str, str], facts: SessionFacts, hook: dict | None, now: float, alive: bool) -> tuple[str, str]:
-    """Let a fresh hook event override the transcript-derived status.
+def hook_applies(facts: SessionFacts, hook: dict | None, now: float, alive: bool) -> bool:
+    """Whether a hook event is fresher than everything else we know.
 
     Newest information wins: the hook only applies while the process is alive,
     within ``HOOK_TTL`` of its receipt, and when the transcript has not been
     written since (a tool_result after an approved permission prompt, say).
     """
     if not alive or not hook:
-        return current
+        return False
     try:
         ts = float(hook.get("ts") or 0)
     except (TypeError, ValueError):
-        return current
+        return False
     if now - ts > HOOK_TTL:
-        return current
-    if facts.last_ts is not None and facts.last_ts.timestamp() > ts:
+        return False
+    return facts.last_ts is None or facts.last_ts.timestamp() <= ts
+
+
+def apply_hook(current: tuple[str, str], facts: SessionFacts, hook: dict | None, now: float, alive: bool) -> tuple[str, str]:
+    """Let a fresh hook event (see ``hook_applies``) override the transcript-derived status."""
+    if not hook_applies(facts, hook, now, alive):
         return current
     return hook_override(hook) or current
+
+
+def question_from_hook(hook: dict | None) -> dict | None:
+    """The AskUserQuestion a PreToolUse hook is waiting on, flattened for the page.
+
+    ``{tool_use_id, title, questions: [{question, header, options: [label, …], multi}]}``,
+    or None when the hook is something else, lacks a ``tool_use_id`` or the
+    question is already ``answered`` / ``abandoned`` (``question_state``).
+    """
+    if not hook or hook.get("hook_event_name") != "PreToolUse" or hook.get("tool_name") != "AskUserQuestion":
+        return None
+    if hook.get("question_state") in ("answered", "abandoned"):
+        return None
+    tool_use_id, tool_input = hook.get("tool_use_id"), hook.get("tool_input")
+    if not isinstance(tool_use_id, str) or not tool_use_id or not isinstance(tool_input, dict):
+        return None
+    raw = tool_input.get("questions")
+    if not isinstance(raw, list):
+        return None
+    questions = []
+    for q in raw:
+        if not isinstance(q, dict) or not isinstance(q.get("question"), str) or not q["question"]:
+            continue
+        options = q.get("options") if isinstance(q.get("options"), list) else []
+        labels = [o["label"] for o in options if isinstance(o, dict) and isinstance(o.get("label"), str) and o["label"]]
+        header = q.get("header") if isinstance(q.get("header"), str) else ""
+        questions.append({"question": q["question"], "header": header, "options": labels, "multi": bool(q.get("multiSelect"))})
+    if not questions:
+        return None
+    title = tool_input.get("title") if isinstance(tool_input.get("title"), str) else ""
+    return {"tool_use_id": tool_use_id, "title": title, "questions": questions}
 
 
 def attention_transitions(previous: dict[str, str], sessions: Iterable[dict]) -> list[dict]:
@@ -207,6 +254,9 @@ def _live_sessions(claude_dir: Path, pid_alive: Callable[[int], bool]) -> list[d
         if not data.get("sessionId"):
             continue
         data["_alive"] = pid_alive(pid)
+        for key in ("name", "messagingSocketPath"):
+            if not isinstance(data.get(key), str):
+                data[key] = ""
         result.append(data)
     return result
 
@@ -270,6 +320,8 @@ def _build(
     now: datetime,
     hook: dict | None = None,
     headless: bool = False,
+    session_name: str = "",
+    socket_path: str = "",
 ) -> Session:
     facts = SessionFacts()
     mtime: datetime | None = None
@@ -285,9 +337,18 @@ def _build(
     status, detail = classify(facts, alive, active_agents)
     if headless and status != WORKING:
         status, detail = DONE, "finished"  # no process to wait for input
-    status, detail = apply_hook((status, detail), facts, hook, now.timestamp(), alive)
+    fresh = hook_applies(facts, hook, now.timestamp(), alive)
+    if fresh:
+        status, detail = hook_override(hook) or (status, detail)
     cwd = facts.cwd or fallback_cwd
     started = datetime.fromtimestamp(started_ms / 1000, tz=timezone.utc) if started_ms else facts.first_ts
+    last_activity = _iso(mtime or facts.last_ts)
+    last_reply = facts.last_reply
+    if fresh and hook.get("hook_event_name") == "Stop" and isinstance(hook.get("last_assistant_message"), str):
+        last_reply = clean_text(hook["last_assistant_message"], PROMPT_MAX) or last_reply
+    waiting_since = None
+    if status in (IDLE, ATTENTION):
+        waiting_since = _iso(datetime.fromtimestamp(float(hook["ts"]), tz=timezone.utc)) if fresh else last_activity
     return Session(
         id=session_id,
         name=facts.title or (Path(cwd).name if cwd else "session"),
@@ -299,11 +360,17 @@ def _build(
         detail=detail,
         context_tokens=facts.context_tokens,
         started_at=_iso(started),
-        last_activity=_iso(mtime or facts.last_ts),
+        last_activity=last_activity,
         messages=facts.assistant_messages,
         agents=agents,
         active_agents=active_agents,
         last_prompt=facts.last_prompt,
+        last_reply=last_reply,
+        permission_mode=facts.permission_mode,
+        session_name=session_name,
+        can_send=bool(alive and not headless and socket_path and os.path.exists(socket_path)),
+        waiting_since=waiting_since,
+        question=question_from_hook(hook) if fresh else None,
     )
 
 
@@ -328,7 +395,9 @@ def collect_sessions(
             continue
         seen.add(sid)
         path = find_transcript(settings.claude_dir, sid)
-        sessions.append(_build(sid, path, info["_alive"], info.get("startedAt"), info.get("cwd", ""), now, hooks.get(sid)))
+        sessions.append(
+            _build(sid, path, info["_alive"], info.get("startedAt"), info.get("cwd", ""), now, hooks.get(sid), session_name=info["name"], socket_path=info["messagingSocketPath"])
+        )
 
     # Transcripts touched today whose process is gone: finished sessions.
     projects = settings.claude_dir / "projects"

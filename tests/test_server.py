@@ -328,11 +328,12 @@ def test_sessions_collector_passes_hooks_and_prunes_expired(monkeypatch, tmp_pat
     assert set(seen["hooks"]) == {"fresh"} and set(state.hooks) == {"fresh"}
 
 
-def test_state_exposes_alert_settings():
-    client, _ = make_client(alert_sound=True)
-    assert client.get("/api/state").json()["settings"] == {"alert_sound": True}
+def test_state_exposes_alert_settings_and_presets():
+    client, _ = make_client(alert_sound=True, presets=(("go", "Go on."),))
+    assert client.get("/api/state").json()["settings"] == {"alert_sound": True, "presets": [{"label": "go", "text": "Go on."}]}
     client, _ = make_client()
-    assert client.get("/api/state").json()["settings"] == {"alert_sound": False}
+    settings = client.get("/api/state").json()["settings"]
+    assert settings["alert_sound"] is False and len(settings["presets"]) >= 3
 
 
 def test_sessions_loop_notifies_on_attention_transitions(monkeypatch):
@@ -381,3 +382,112 @@ def test_sessions_loop_notifies_on_attention_transitions(monkeypatch):
 
     asyncio.run(run_twice())
     assert quiet == []
+
+
+# ---------- answering questions and sending presets ----------
+
+_ASK_HOOK = {
+    "session_id": "abc",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "AskUserQuestion",
+    "tool_use_id": "toolu_1",
+    "tool_input": {"questions": [{"question": "Deploy where?", "header": "Target", "options": [{"label": "staging"}, {"label": "prod"}], "multiSelect": False}]},
+}
+
+
+def test_ask_hook_opens_a_pending_answer_the_script_can_poll():
+    client, _ = make_client()
+    assert client.get("/api/answer/toolu_1?wait=0").status_code == 404
+    assert client.post("/api/hook", json=_ASK_HOOK).json() == {"ok": True}
+    assert client.get("/api/answer/toolu_1?wait=0").json() == {"status": "pending"}
+    r = client.post("/api/sessions/abc/answer", json={"tool_use_id": "toolu_1", "answers": {"Deploy where?": "staging"}})
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert client.get("/api/answer/toolu_1?wait=0").json() == {"status": "answered", "answers": {"Deploy where?": "staging"}}
+    assert client.app.state.dashboard.hooks["abc"]["question_state"] == "answered"
+
+
+def test_answer_pass_hands_the_question_back_to_the_terminal():
+    client, _ = make_client()
+    client.post("/api/hook", json=_ASK_HOOK)
+    assert client.post("/api/sessions/abc/answer", json={"tool_use_id": "toolu_1", "pass": True}).status_code == 200
+    assert client.get("/api/answer/toolu_1?wait=0").json() == {"status": "pass"}
+
+
+def test_answer_route_rejects_unknown_foreign_abandoned_and_malformed():
+    from edgeboard.answers import ABANDON_AFTER
+
+    client, _ = make_client()
+    body = {"tool_use_id": "toolu_1", "answers": {"Deploy where?": "prod"}}
+    assert client.post("/api/sessions/abc/answer", json=body).status_code == 404  # nothing pending
+    client.post("/api/hook", json=_ASK_HOOK)
+    assert client.post("/api/sessions/other/answer", json=body).status_code == 404  # not that session's question
+    assert client.post("/api/sessions/abc/answer", json={"tool_use_id": "toolu_1"}).status_code == 422  # neither answers nor pass
+    assert client.post("/api/sessions/abc/answer", json={"tool_use_id": "toolu_1", "answers": {"q": 5}}).status_code == 422
+    import time as _time
+
+    client.app.state.answers.expire(now=_time.time() + ABANDON_AFTER + 1)  # the hook script stopped polling
+    assert client.post("/api/sessions/abc/answer", json=body).status_code == 409
+    assert client.app.state.dashboard.hooks["abc"]["question_state"] == "abandoned"
+
+
+def test_send_route_posts_into_the_session_inbox(monkeypatch, tmp_path):
+    import edgeboard.server as server
+    from edgeboard.collectors.claude_inbox import Inbox
+
+    sent = []
+    monkeypatch.setattr(server, "find_inbox", lambda claude_dir, sid: Inbox("/tmp/x.sock", "tok") if sid == "abc" else None)
+    monkeypatch.setattr(server, "send_message", lambda inbox, text: sent.append((inbox, text)))
+    client, _ = make_client(claude_dir=tmp_path)
+    r = client.post("/api/sessions/abc/send", json={"text": "  run the tests  "})
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert sent == [(Inbox("/tmp/x.sock", "tok"), "run the tests")]
+    # the card flips to "working on your prompt" until the transcript catches up
+    hook = client.app.state.dashboard.hooks["abc"]
+    assert hook["hook_event_name"] == "UserPromptSubmit" and hook["prompt"] == "run the tests"
+    assert client.post("/api/sessions/nope/send", json={"text": "hi"}).status_code == 404
+    assert client.post("/api/sessions/abc/send", json={"text": "   "}).status_code == 422
+    assert client.post("/api/sessions/abc/send", json={"text": "x" * 4001}).status_code == 422
+
+    def boom(inbox, text):
+        raise ConnectionRefusedError("nobody home")
+
+    monkeypatch.setattr(server, "send_message", boom)
+    r = client.post("/api/sessions/abc/send", json={"text": "hi"})
+    assert r.status_code == 502 and "nobody home" in r.json()["detail"]
+
+
+def test_demo_mode_answers_and_sends_without_touching_anything(monkeypatch):
+    import edgeboard.server as server
+
+    monkeypatch.setattr(server, "find_inbox", lambda *a: (_ for _ in ()).throw(AssertionError("demo must not look for inboxes")))
+    client, _ = make_client(demo=True)
+    sessions = client.get("/api/state").json()["sessions"]
+    asking = next(s for s in sessions if s["question"])
+    q = asking["question"]
+    r = client.post(f"/api/sessions/{asking['id']}/answer", json={"tool_use_id": q["tool_use_id"], "answers": {q["questions"][0]["question"]: q["questions"][0]["options"][0]}})
+    assert r.status_code == 200
+    after = next(s for s in client.get("/api/state").json()["sessions"] if s["id"] == asking["id"])
+    assert after["question"] is None and after["status"] == "working"
+    idle = next(s for s in sessions if s["can_send"])
+    assert client.post(f"/api/sessions/{idle['id']}/send", json={"text": "carry on"}).status_code == 200
+    after = next(s for s in client.get("/api/state").json()["sessions"] if s["id"] == idle["id"])
+    assert after["status"] == "working" and after["last_prompt"] == "carry on"
+    assert client.post("/api/sessions/demo-1/send", json={"text": "x"}).status_code in (200, 404)
+
+
+def test_sessions_collector_expires_pending_answers(monkeypatch, tmp_path):
+    import asyncio
+    import time
+
+    import edgeboard.server as server
+    from edgeboard.answers import ABANDON_AFTER, Answers
+    from edgeboard.server import Collectors
+
+    state = State()
+    state.hooks = {"abc": {**_ASK_HOOK, "ts": time.time()}}
+    answers = Answers(state.hooks)
+    answers.open("toolu_1", "abc", now=time.time() - ABANDON_AFTER - 1)
+    monkeypatch.setattr(server, "collect_sessions", lambda *a, **k: ([], {"today": 0, "done": 0, "working": 0, "idle": 0, "attention": 0}))
+    c = Collectors(Settings(claude_dir=tmp_path), state, lambda a: (0, ""), answers=answers)
+    asyncio.run(c._sessions())
+    assert state.hooks["abc"]["question_state"] == "abandoned"

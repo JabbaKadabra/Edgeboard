@@ -33,7 +33,7 @@ class State:
     hooks: dict[str, dict] = field(default_factory=dict)
     errors: dict[str, str | None] = field(default_factory=lambda: {"usage": None, "sessions": None, "spotify": None, "system": None})
     # The few settings the page needs to know (set by create_app).
-    settings: dict = field(default_factory=lambda: {"alert_sound": False})
+    settings: dict = field(default_factory=lambda: {"alert_sound": False, "presets": []})
 
     def snapshot(self) -> dict:
         return {

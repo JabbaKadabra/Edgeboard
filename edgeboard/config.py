@@ -15,6 +15,27 @@ from typing import Mapping
 
 DEFAULT_ENV_FILE = Path(".env")
 
+# Follow-ups the page offers on an idle session card. They travel to the
+# session as plain text (slash commands would not run), hence the phrasing.
+DEFAULT_PRESETS: tuple[tuple[str, str], ...] = (
+    ("continue", "Continue with the next step."),
+    ("commit", "Use the /commit skill to commit the current work with a clear message."),
+    ("tests", "Run the test suite and fix whatever fails."),
+    ("summary", "Summarize what you did, what is left and what you need from me, in a few lines."),
+    ("yes", "Yes, go ahead."),
+)
+
+
+def parse_presets(raw: str) -> tuple[tuple[str, str], ...]:
+    """``label=text|label=text`` -> ((label, text), …); ``DEFAULT_PRESETS`` when nothing usable is in there."""
+    presets = []
+    for item in raw.split("|"):
+        label, sep, text = item.partition("=")
+        label, text = label.strip(), text.strip()
+        if sep and label and text:
+            presets.append((label, text))
+    return tuple(presets) or DEFAULT_PRESETS
+
 
 def parse_env_file(path: Path) -> dict[str, str]:
     """Return KEY=value pairs from a dotenv-style file; {} if it does not exist."""
@@ -60,6 +81,11 @@ class Settings:
     # when a session switches to waiting for you or needing permission.
     alert_sound: bool = False
     alert_notify: bool = False
+    # Follow-up buttons on idle session cards (see ``parse_presets``) and how
+    # long the hook script waits for an AskUserQuestion answer from the panel
+    # before the terminal dialog takes over (scripts/edgeboard-hook.py).
+    presets: tuple[tuple[str, str], ...] = DEFAULT_PRESETS
+    answer_wait: float = 90.0
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None, env_file: Path | None = None) -> "Settings":
@@ -101,4 +127,6 @@ class Settings:
             demo=get("DEMO", defaults.demo),
             alert_sound=get("ALERT_SOUND", defaults.alert_sound),
             alert_notify=get("ALERT_NOTIFY", defaults.alert_notify),
+            presets=parse_presets(get("PRESETS", "")),
+            answer_wait=get("ANSWER_WAIT", defaults.answer_wait),
         )

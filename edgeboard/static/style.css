@@ -210,6 +210,20 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 .card-proj b { color: var(--pink); font-weight: 400; }
 .card-detail { font-size: 17px; color: var(--muted); margin-top: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .attention .card-detail { color: var(--pink); }
+/* action row: option buttons for a pending question (attention) or preset follow-ups (idle); one finger-sized row, never wraps */
+.card-actions { display: flex; gap: 8px; flex: none; overflow: hidden; white-space: nowrap; }
+.card-actions button { min-height: 46px; }
+.act {
+  min-height: 46px; padding: 0 16px; font: inherit; font-size: 17px; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--border); cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0;
+  transition: transform .08s ease, background .15s ease;
+}
+.act:active { transform: scale(.96); background: var(--border); }
+.attention .card-actions .act { border-color: var(--pink); }
+.act.terminal { color: var(--muted); border-style: dashed; margin-left: auto; flex: none; }
+.act.busy { opacity: .5; pointer-events: none; }
+.act.sent { border-color: var(--ok); color: var(--ok); pointer-events: none; }
 .card-foot { display: flex; flex-wrap: wrap; gap: 0 8px; font-size: 15px; color: var(--muted); }
 .tag { white-space: nowrap; }
 .tag + .tag::before { content: "·"; margin-right: 6px; }
@@ -220,7 +234,7 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 /* session detail overlay: full height, the card's colours, dismissed by tapping the backdrop or after 20 s */
 .overlay { position: fixed; inset: 0; z-index: 20; display: flex; justify-content: center; padding: 18px; background: rgba(21, 22, 29, .82); }
 .overlay-card {
-  width: min(1200px, 100%); background: var(--panel); border: 1px solid var(--border);
+  width: min(1700px, 100%); background: var(--panel); border: 1px solid var(--border);
   padding: 24px 28px; display: flex; flex-direction: column; gap: 16px; min-height: 0; overflow: hidden;
 }
 .overlay-card.working { border-color: var(--accent); }
@@ -236,8 +250,28 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 .ov-grid dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 #ov-cwd { color: var(--pink); }
 #ov-model { color: var(--cyan); }
-.ov-prompt-head { font-size: 15px; color: var(--muted); border-top: 1px dashed var(--border); padding-top: 12px; }
-.ov-prompt { font-size: 19px; line-height: 1.4; color: var(--accent-2); overflow: hidden; min-height: 0; overflow-wrap: anywhere; }
+/* facts on the left; the conversation (last prompt / reply), the pending question and the actions on the right */
+.ov-body { display: grid; grid-template-columns: 2fr 3fr; gap: 0 32px; flex: 1; min-height: 0; }
+.ov-left, .ov-right { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.ov-right { overflow-y: auto; scrollbar-width: none; overscroll-behavior: contain; }
+.ov-right::-webkit-scrollbar { display: none; }
+.ov-prompt-head { font-size: 15px; color: var(--muted); flex: none; }
+.ov-prompt-head + .ov-prompt-head, .ov-prompt-head:not(:first-child) { border-top: 1px dashed var(--border); padding-top: 10px; }
+.ov-prompt, .ov-reply { font-size: 18px; line-height: 1.4; overflow: hidden; overflow-wrap: anywhere; flex: none; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.ov-prompt { color: var(--accent-2); }
+/* the full question set: a header line per question, its options as toggles, then send / hand back to the terminal */
+.ov-questions { display: flex; flex-direction: column; gap: 12px; border-top: 1px dashed var(--border); padding-top: 12px; flex: none; }
+.ov-q-text { font-size: 19px; color: var(--pink); }
+.ov-q-text b { color: var(--text); font-weight: 700; margin-right: 10px; }
+.ov-q-options, .ov-q-submit, .ov-presets, .ov-compose { display: flex; flex-wrap: wrap; gap: 8px; }
+.ov-q-options button.sel { background: var(--pink); color: var(--bg); border-color: var(--pink); }
+.ov-actions { display: flex; flex-direction: column; gap: 10px; border-top: 1px dashed var(--border); padding-top: 12px; flex: none; }
+.ov-compose { flex-wrap: nowrap; }
+.ov-compose input {
+  flex: 1; min-width: 0; min-height: 48px; padding: 0 14px; font: inherit; font-size: 18px;
+  color: var(--text); background: var(--bg); border: 1px solid var(--border); outline: none;
+}
+.ov-compose input:focus { border-color: var(--accent); }
 
 /* ---------- column 4 ---------- */
 .panel-spotify { flex: 1; display: flex; flex-direction: column; gap: 12px; min-height: 0; }

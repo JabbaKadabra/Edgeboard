@@ -112,8 +112,9 @@ Functions:
 Discovery:
 
 1. `~/.claude/sessions/<pid>.json` lists live interactive sessions
-   (`sessionId`, `cwd`, `startedAt`, `name`). A session is *alive* when the
-   pid exists in `/proc`.
+   (`sessionId`, `cwd`, `startedAt`, `name`, `messagingSocketPath`). A
+   session is *alive* when the pid exists in `/proc`; it `can_send` when it
+   is alive and the socket path exists.
 2. Transcript files modified today whose session id is not alive are
    shown as *done* (limited to the most recent N, default 12).
 3. Subagent transcripts are the `*.jsonl` files under
@@ -142,7 +143,15 @@ since it arrived. A permission prompt, an elicitation dialog or a
 (sorted before working; pink); other `PreToolUse` events give the tool
 detail above; `PostToolUse` → thinking; `UserPromptSubmit` → working on
 your prompt; `Stop` / idle prompt → waiting for you; `SessionStart` (except
-`compact`) → session started. Malformed bodies get a 400.
+`compact`) → session started. Malformed bodies get a 400. `hook_applies()`
+is the one freshness rule; the same fresh hook also feeds `question` (a
+pending `AskUserQuestion`, flattened by `question_from_hook()` to
+`{tool_use_id, title, questions: [{question, header, options: [label…], multi}]}`,
+null once its `question_state` is `answered` or `abandoned`), `last_reply`
+(a `Stop` hook's `last_assistant_message`, else the transcript's last
+assistant text block) and `waiting_since` (the hook's receipt time, else
+the last activity, only while idle or attention). The transcript also
+yields `permission_mode` (latest user prompt's `permissionMode`).
 
 Title: the latest `summary` line if any, else the first user prompt's first
 line with `<system-reminder>` and similar tags stripped, truncated to 60
@@ -158,8 +167,44 @@ Cards show the detail line and, in the foot, an `N agents` badge (`a/N` in
 amber while `a` are active). Tapping a card opens a full-height overlay
 (markup in `index.html`, refilled from every snapshot) with the full title,
 cwd, branch, model, start time and duration, last activity, message count,
-context tokens, agents and the last prompt; it closes on a backdrop tap,
-after 20 s, or when the session leaves the snapshot.
+context tokens, agents, permission mode, waiting time, the last prompt and
+reply; it closes on a backdrop tap, after 20 s (restarted by any tap inside),
+or when the session leaves the snapshot.
+
+Answering and sending: an *attention* card with a `question` shows the
+question text instead of the detail line and an action row: the options of
+a single-choice question (plus `terminal`, which hands the question back to
+the terminal dialog), or one `answer…` button opening the overlay, where
+every question has its options as toggles (multi-choice comma-joined) and a
+`send answers` button; typed text fills questions without a selection. An
+*idle* card that `can_send` shows the first four presets; the overlay lists
+them all with a free-text line. Buttons stop propagation (they never open
+the overlay), stay busy until the server answers, show `sent` for 3 s and
+report failures on the red error line. Both flows are mechanisms Claude Code
+documents: answers go back through the `PreToolUse` hook's `updatedInput`
+(`answers` keyed by question text), prompts through the session's inbox
+socket. Demo mode exercises both against its canned sessions.
+
+### Answers and inbox (`answers.py`, `claude_inbox.py`, `scripts/edgeboard-hook.py`)
+
+`scripts/edgeboard-hook.py` is the hook command for every event: it POSTs
+the stdin JSON to `/api/hook` and, for a `PreToolUse` of `AskUserQuestion`,
+long-polls `GET /api/answer/{tool_use_id}` (25 s per request) until the
+panel answers or `--wait` / `EDGEBOARD_ANSWER_WAIT` (90 s) runs out, then
+prints `{"hookSpecificOutput": {"hookEventName": "PreToolUse",
+"permissionDecision": "allow", "updatedInput": {…tool_input, "answers"}}}`
+or nothing (the terminal dialog appears). `Answers` keeps one pending entry
+per `tool_use_id` (opened by the hook route, resolved by the answer route,
+expired after `HOOK_TTL`); no poll for 35 s means the script gave up, the
+entry is *abandoned* and the session's hook dict gets
+`question_state = "abandoned"` (the card says "answer in the terminal").
+`claude_inbox.find_inbox()` reads the newest pid file of a session for
+`messagingSocketPath` and the `peerToken` from `<pid>.<sha256>.key`;
+`send_message()` writes `{"type":"auth","token"}` and
+`{"type":"user","message":{"role":"user","content"}}` as JSON lines and
+closes. Slash commands do not execute through that channel, so presets
+(`EDGEBOARD_PRESETS`, `label=text|…`, `DEFAULT_PRESETS` otherwise) are
+phrased as instructions.
 
 ### Usage (`claude_usage.py`)
 
@@ -244,6 +289,21 @@ shows a hint instead of a list. Snapshot key `spotify_queue`.
   `POST /api/spotify/skip {index}` → JSON bodies validated to 0..1 (index
   0..19), 422 otherwise; same reply shape. Demo mode only mutates its canned
   state.
+- `POST /api/hook` → stores the latest hook event per session (400 without
+  `session_id` / `hook_event_name`); a `PreToolUse` of `AskUserQuestion`
+  with a `tool_use_id` also opens a pending answer.
+- `GET /api/answer/{tool_use_id}?wait=` → long-poll for the hook script:
+  404 unknown, `{status: pending}` after `wait` (capped at 30 s),
+  `{status: answered, answers}` or `{status: pass}`.
+- `POST /api/sessions/{id}/answer {tool_use_id, answers | pass}` → resolves
+  it: 404 unknown or another session's, 409 abandoned or already answered,
+  422 malformed.
+- `POST /api/sessions/{id}/send {text}` → writes into the session's inbox
+  socket: 404 without an inbox, 502 on a socket error; on success the
+  session's hook state becomes `UserPromptSubmit` so the card reads
+  "working on your prompt" until the transcript catches up. Demo mode only
+  mutates its canned sessions and never opens a socket.
+- Snapshot `settings` = `{alert_sound, presets: [{label, text}]}`.
 - Binds `127.0.0.1:8765` by default (`EDGEBOARD_HOST`, `EDGEBOARD_PORT`).
 
 ### Frontend
@@ -306,11 +366,18 @@ session seen for the first time never alerts.
   fallback, timeline bucketing, playerctl output parsing, temperature
   sensor selection, model-name shortening.
 - Server smoke test with `TestClient`: `/api/state` returns the schema,
-  `/api/spotify/next` calls the injected runner.
+  `/api/spotify/next` calls the injected runner; the hook, answer and send
+  routes (`find_inbox` / `send_message` monkeypatched) and their demo
+  variants.
+- `tests/test_inbox.py` posts into a real `AF_UNIX` listener;
+  `tests/test_answers.py` drives the registry; `tests/test_hook_script.py`
+  runs `scripts/edgeboard-hook.py` as a subprocess against a stub server.
 - Browser layout test (`tests/test_page.py`, marker `browser`, skipped
   without Playwright): the demo page in headless Chromium at 2560×720 must
   not scroll or overflow, show four columns and four cards, the Spotify
-  title and no console errors; a screenshot goes to `tests/artifacts/`.
+  title and no console errors; a screenshot goes to `tests/artifacts/`. A
+  second test answers the demo question through the overlay and taps a
+  preset.
 - Manual: run `python -m edgeboard` on the target machine and open the page.
 
 ## Deployment (Arch)

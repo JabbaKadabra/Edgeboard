@@ -31,7 +31,7 @@ def fill_demo(state: State) -> None:
         "updated_at": now.isoformat(),
     }
 
-    def session(i, name, status, detail, model, ctx, minutes, project="it-system-of-record", branch="master", agents=0, active_agents=0):
+    def session(i, name, status, detail, model, ctx, minutes, project="it-system-of-record", branch="master", agents=0, active_agents=0, question=None, can_send=False, reply=""):
         return {
             "id": f"demo-{i}",
             "name": name,
@@ -48,13 +48,28 @@ def fill_demo(state: State) -> None:
             "agents": agents,
             "active_agents": active_agents,
             "last_prompt": f"Review the {name.lower()} once more and list what still blocks Monday's rollout, then start on the fixes in priority order.",
+            "last_reply": reply,
+            "permission_mode": "plan" if i == 1 else "default",
+            "session_name": f"{project[:6]}-{i}",
+            "can_send": can_send,
+            "waiting_since": (now - timedelta(minutes=minutes)).isoformat() if status in ("idle", "attention") else None,
+            "question": question,
         }
 
+    question = {
+        "tool_use_id": "demo-toolu-1",
+        "title": "Rollout",
+        "questions": [
+            {"question": "Which environment should the Monday rollout target first?", "header": "Target", "options": ["staging", "prod", "both"], "multi": False},
+            {"question": "Who gets the change notice?", "header": "Notify", "options": ["ops", "hr-leads", "everyone"], "multi": True},
+        ],
+    }
+
     state.sessions = [
-        session(1, "HR Dashboard Monday review", "attention", "needs permission", "opus-5", 197_000, 0),
-        session(2, "UKG process repo organization", "working", "running pytest tests/ -q", "opus-5", 251_000, 2),
-        session(3, "Hazelwood Frost findings memo", "working", "agents running", "fable-5-1", 420_000, 1, agents=3, active_agents=2),
-        session(4, "ITOPS features gap analysis", "idle", "waiting for you", "opus-5", 304_000, 31, agents=1),
+        session(1, "HR Dashboard Monday review", "attention", "asking you a question", "opus-5", 197_000, 0, question=question, can_send=True, reply="Two options remain for the rollout order; I need your call before I touch the deploy scripts."),
+        session(2, "UKG process repo organization", "working", "running pytest tests/ -q", "opus-5", 251_000, 2, can_send=True),
+        session(3, "Hazelwood Frost findings memo", "working", "agents running", "fable-5-1", 420_000, 1, agents=3, active_agents=2, can_send=True),
+        session(4, "ITOPS features gap analysis", "idle", "waiting for you", "opus-5", 304_000, 31, agents=1, can_send=True, reply="Gap analysis is drafted in docs/itops-gaps.md: 14 features, 5 blocking. Want me to open tickets for the blocking ones?"),
     ][:4]
     state.sessions_summary = {"today": 21, "done": 5, "working": 2, "idle": 2, "attention": 1}
     state.spotify = {
