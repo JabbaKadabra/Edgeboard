@@ -8,11 +8,12 @@ It shows, live:
 - **Claude usage** – 5-hour and weekly limits with % used and time until
   reset, today's token totals, and a 24-hour usage histogram.
 - **Claude Code sessions** – a card per session with title, project, branch,
-  model, subagent count, the task list's progress and the task in hand,
-  Claude's last reply, a context gauge against the model's window (with the
-  compaction count), and whether it is working (and on which tool or file),
-  idle, done, or waiting for you to approve a permission or answer a
-  question. A question's options are on the card: tap one to answer it, and
+  model and permission mode, how long it has been running, subagent and
+  commit counts, the task list's progress and the task in hand, your last
+  prompt and as much of Claude's last reply as fits, a context gauge against
+  the model's window (with the compaction count), and whether it is working
+  (and on which tool or file), idle, done, or waiting for you to approve a
+  permission or answer a question. A question's options are on the card: tap one to answer it, and
   tap a preset ("continue", "commit", "tests", …) to send an idle session its
   next prompt. Tap the card itself for the full title, path, timings, the
   last prompt and reply, every question, all presets and a free-text line.
@@ -23,7 +24,7 @@ It shows, live:
 - **System** – CPU load and temperature, GPU load and temperature (NVIDIA or
   AMD), memory, disk, network throughput, and a load sparkline.
 - **Git** – today's commits across the repositories your sessions work in
-  (hash, repo, subject, age, and the added / deleted line totals); a finished
+  (hash, repo, subject, age, and the added / deleted line totals); each
   session's card says how many commits it made.
 
 Design notes live in `docs/superpowers/specs/`.

@@ -205,7 +205,7 @@ def test_three_columns_with_an_activity_system_git_row():
     assert len(cols) == 3, cols
     assert re.search(r"^\.sessions\s*\{[^}]*grid-template-columns:\s*repeat\(4,", css, re.M)
     assert html.index('class="col col-rail"') < html.index('class="col col-main"') < html.index('class="col col-side"')
-    # the rail: clock with the seconds and date under it, pomodoro, errors, mascot, current system figures
+    # the rail: the watch-style clock (seconds beside the minutes, the date under it), pomodoro, errors, mascot, current system figures
     rail = html.split('class="col col-rail"')[1].split("</section>")[0]
     for element in ('id="clock-hm"', 'id="clock-s"', 'id="clock-date"', 'id="pomo"', 'id="err-line"', 'id="mascot"', 'id="sys-line"'):
         assert element in rail, element

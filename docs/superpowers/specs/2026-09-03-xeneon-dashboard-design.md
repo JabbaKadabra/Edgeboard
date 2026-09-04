@@ -187,14 +187,22 @@ Live sessions also carry `commits`: how many commits the git collector
 (below) found in the session's repository since it started, filled in by
 the server on every sessions round.
 
-Cards show, between the project line and the detail line, the task
-progress (`3/7 tasks · <current>` with a mini bar) and up to three lines of
-the last reply (two when there are tasks; a pending question replaces the
-reply since the detail line already shows it), then the detail line and the
-foot: model, the context gauge (`ctx 197k` + a mini bar coloured by
-`settings.context_warn`: amber from 10 points below, red from the threshold,
-+ `98%` + `⟲2` when compacted), an `N agents` badge (`a/N` in amber while
-`a` are active) and the message count, on one line. Tapping a card opens a
+Cards are compact records at a 18 / 15 / 14 / 13 px scale: a head with the
+status and the age of the last activity on the left and `project@branch` on
+the right; the title on up to two lines; a body with the task progress
+(`3/7 tasks · <current>` with a mini bar), your last prompt on one line
+(`you ❯ …`) and as many whole lines of the last reply as the body has room
+for (the page measures the room and sets the line clamp; the body takes the
+height the other rows leave); the "now" line (the `detail`, or the pending
+question on up to two lines); the action row; and a 2×2 grid of figures
+behind a dashed rule, whose cells sit at the same spot on every card so the
+row of cards reads as one table: model and permission mode (`plan`,
+`auto-edits`, `bypass`, `dont-ask`; nothing for `default`) | `up <duration
+since started_at>` and the message count; the context gauge (`ctx 197k` + a
+mini bar coloured by `settings.context_warn`: amber from 10 points below, red
+from the threshold, + `98%` + `⟲2` when compacted) | the `N agents` badge
+(`a/N` in amber while `a` are active) and `N commits` when there are any.
+Tapping a card opens a
 full-height overlay (markup in `index.html`, refilled from every snapshot)
 with the full title, cwd, branch, model, start time and duration, last
 activity, message count, context tokens / window / % with the compactions,
@@ -361,8 +369,10 @@ run through the same injectable runner shape as playerctl.
 Fixed 2560×720 layout via CSS grid, but fluid enough to preview in a normal
 browser window. Three columns (the "Edgeboard Improved" Claude Design):
 
-1. The rail (260 px): the big clock with the seconds and date on a line
-   under it, the pomodoro box, the red error line, the pixel mascot, and a
+1. The rail (260 px): the clock set like a digital watch (hour:minute
+   at 76 px, the seconds ticking on its baseline beside the minutes with
+   the AM/PM of 12 h locales stacked above them, and under it the date on
+   its own line: the weekday bright, "Sep 4" muted), the pomodoro box, the red error line, the pixel mascot, and a
    two-column grid of the current system figures (CPU % and °, GPU % and °,
    MEM, DISK, ↓ and ↑ rates) behind a dashed rule.
 2. The centre (flexible), three rows: a one-row Limits pane (per window the
@@ -375,10 +385,11 @@ browser window. Three columns (the "Edgeboard Improved" Claude Design):
    today (the commit rows `hash repo subject age`, with `N commits · +added
    −deleted` in the head).
 3. Spotify pane filling the column (400 px): a 200 px square of album art
-   over the centred title and "artist · album", a 32 px seekable progress
-   bar that shows the target time while pressed, three 72 px touch buttons,
-   a slim volume slider, and the scrollable "up next" list where a tap on a
-   row skips to that track.
+   over the centred title and "artist · album", a 28 px seekable progress
+   bar that shows the target time while pressed, three 44 px touch buttons
+   in one low row, a slim volume slider, and the scrollable "up next" list
+   in what is left: the next track is always fully on screen (two or three
+   with a one-line title), and a tap on a row skips to that track.
 
 Colours (Dracula on a near-black ground): background and panes `#15161d`,
 raised surfaces `#1e1f28`, borders `#363848`, text `#f8f8f2`, muted

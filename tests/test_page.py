@@ -69,15 +69,21 @@ def test_demo_page_fits_the_panel(demo_url, page):
     # the four cards sit in one row
     tops = page.evaluate("[...document.querySelectorAll('#sessions .card')].map(c => Math.round(c.getBoundingClientRect().top))")
     assert len(set(tops)) == 1, tops
-    # the widest clock reading still fits the rail
+    # the widest clock and date readings still fit the rail, the seconds sitting on the hour:minute baseline
     fits = page.evaluate("""() => {
-      const hm = document.getElementById('clock-hm'), keep = hm.textContent;
-      hm.textContent = '12:34';
-      const ok = hm.parentElement.scrollWidth <= hm.parentElement.clientWidth + 1;
-      hm.textContent = keep;
-      return ok;
+      const ids = ['clock-hm', 'clock-ampm', 'clock-s', 'clock-day', 'clock-date'];
+      const keep = ids.map(id => document.getElementById(id).textContent);
+      ['12:34', 'PM', '59', 'Wednesday', 'Sep 30'].forEach((v, i) => document.getElementById(ids[i]).textContent = v);
+      const clock = document.querySelector('.clock'), date = document.querySelector('.dateline');
+      const hm = document.getElementById('clock-hm').getBoundingClientRect(), s = document.getElementById('clock-s').getBoundingClientRect();
+      const out = {
+        clock: clock.scrollWidth <= clock.clientWidth + 1, date: date.scrollWidth <= date.clientWidth + 1,
+        baseline: Math.abs(hm.bottom - s.bottom) <= 12, beside: s.left > hm.right,
+      };
+      keep.forEach((v, i) => document.getElementById(ids[i]).textContent = v);
+      return out;
     }""")
-    assert fits, "the clock overflows the rail"
+    assert all(fits.values()), fits
 
     # no visible element pokes outside the viewport
     assert overflowing(page, WIDTH, HEIGHT) == []
@@ -97,17 +103,41 @@ def test_demo_page_fits_the_panel(demo_url, page):
     assert page.errors == []
 
 
+def test_demo_spotify_keeps_the_next_track_on_screen(demo_url, page):
+    page.goto(demo_url)
+    page.wait_for_function("document.querySelectorAll('#queue li').length === 6", timeout=10_000)
+    # the cover sits over the title; the transport row is low but still takes a finger
+    art, title = page.locator("#spotify .art-wrap").bounding_box(), page.locator("#np-title").bounding_box()
+    assert art["y"] + art["height"] <= title["y"], (art, title)
+    for ctl in page.locator("#spotify .ctl").all():
+        assert 40 <= ctl.bounding_box()["height"] <= 48, ctl.bounding_box()
+    assert page.locator("#np-progress").bounding_box()["height"] >= 24
+
+    def first_row_fits():
+        queue, first = page.locator("#queue").bounding_box(), page.locator("#queue li").first.bounding_box()
+        return first["y"] + first["height"] <= queue["y"] + queue["height"] + 1, (queue, first)
+
+    # the next track is fully inside the pane, and stays so under a title that wraps to two lines
+    assert page.locator("#queue li").first.is_visible() and "Reunion" in page.locator("#queue li").first.text_content()
+    assert first_row_fits()[0], first_row_fits()[1]
+    page.evaluate("document.getElementById('np-title').textContent = 'Wait (feat. a very long remix title that needs two lines)'")
+    assert page.locator("#np-title").evaluate("(el) => el.getBoundingClientRect().height > parseFloat(getComputedStyle(el).lineHeight) * 1.5")
+    assert first_row_fits()[0], first_row_fits()[1]
+    assert page.errors == []
+
+
 # Runs before the answering test below: that one answers the demo question and sends a
 # preset, after which no attention or idle card is left in the module-scoped demo state.
 def test_demo_cards_fill_their_body_and_gauge_the_context(demo_url, page):
     page.goto(demo_url)
     page.wait_for_function("document.querySelectorAll('#sessions .card').length === 4", timeout=10_000)
-    # the idle card carries Claude's last reply; the attention card shows its question instead
+    # every card carries Claude's last reply; the attention card keeps it above its question
     idle = page.locator("#sessions .card.idle").first
     assert idle.locator(".card-reply").text_content().startswith("Gap analysis")
     assert idle.locator(".card-reply").is_visible()
     asking = page.locator("#sessions .card.attention").first
-    assert asking.locator(".card-reply").is_hidden()
+    assert asking.locator(".card-reply").is_visible()
+    assert asking.locator(".card-detail").evaluate("(el) => el.getBoundingClientRect().height > parseFloat(getComputedStyle(el).lineHeight) * 1.5")  # the question wraps to a second line
     # a task list shows its progress and the task in hand
     tasks = page.locator("#sessions .card .card-tasks:visible")
     assert tasks.count() >= 1
@@ -116,6 +146,23 @@ def test_demo_cards_fill_their_body_and_gauge_the_context(demo_url, page):
     assert page.locator("#sessions .card .card-ctx .bar-fill").count() == 4
     assert page.locator("#sessions .card .card-ctx .bar-fill.hot").count() == 1
     assert page.locator("#sessions .card .card-ctx .card-compact:visible").count() >= 1
+    # your last prompt is on every card, one line, marked as yours
+    assert page.locator("#sessions .card .card-prompt:visible").count() == 4
+    assert page.evaluate("getComputedStyle(document.querySelector('#sessions .card .card-prompt'), '::before').content").startswith('"you')
+    # the reply shows whole lines only and as many as the body has room for: at least three on a card without buttons
+    fit = page.evaluate("""[...document.querySelectorAll('#sessions .card')].filter((c) => c.querySelector('.card-actions').hidden).map((c) => {
+      const body = c.querySelector('.card-body').getBoundingClientRect(), reply = c.querySelector('.card-reply');
+      const r = reply.getBoundingClientRect(), lh = parseFloat(getComputedStyle(reply).lineHeight);
+      return { lines: Number(reply.style.webkitLineClamp), fits: r.bottom <= body.bottom + 1, whole: Math.abs(r.height / lh - Math.round(r.height / lh)) < .05 };
+    })""")
+    assert fit and all(f["fits"] and f["whole"] and f["lines"] >= 3 for f in fit), fit
+    # the figures grid: model and mode, uptime and messages, the context gauge, agents and commits; every cell at the same x on every card
+    cells = page.evaluate("[...document.querySelectorAll('#sessions .card')].map((c) => [...c.querySelectorAll('.card-meta .cell')].map((el) => el.getBoundingClientRect().left - c.getBoundingClientRect().left))")
+    assert len(cells) == 4 and all(row == cells[0] for row in cells), cells
+    texts = [c.strip() for c in page.locator("#sessions .card .card-meta").all_text_contents()]
+    assert any("plan" in t for t in texts) and any("auto-edits" in t for t in texts)
+    assert all("up " in t and "msgs" in t for t in texts)
+    assert any("commits" in t for t in texts) and any("agents" in t for t in texts)
     # the overlay spells the numbers out
     page.locator("#sessions .card.attention .card-title").first.click()
     assert page.locator("#overlay").is_visible()

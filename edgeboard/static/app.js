@@ -116,12 +116,18 @@
   drawClaude(true);
 
   // ---------- clock ----------
+  // hour:minute big, the seconds and (in 12 h locales) the meridiem stacked beside them,
+  // and the date split into the weekday and the rest so the two can be coloured apart
   function tickClock() {
     const d = new Date();
-    const hm = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).replace(/\s?[AP]M$/i, "");
-    text("clock-hm", hm);
-    text("clock-s", ":" + String(d.getSeconds()).padStart(2, "0"));
-    text("clock-date", d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) + (/[AP]M/i.test(d.toLocaleTimeString()) ? (d.getHours() < 12 ? " AM" : " PM") : ""));
+    const time = new Intl.DateTimeFormat([], { hour: "numeric", minute: "2-digit" }).formatToParts(d);
+    const period = time.find((p) => p.type === "dayPeriod");
+    text("clock-hm", time.filter((p) => p.type !== "dayPeriod").map((p) => p.value).join("").trim());
+    text("clock-ampm", period ? period.value.toUpperCase() : "");
+    text("clock-s", String(d.getSeconds()).padStart(2, "0"));
+    const date = new Intl.DateTimeFormat([], { weekday: "long", month: "short", day: "numeric" }).formatToParts(d);
+    text("clock-day", date.find((p) => p.type === "weekday").value);
+    text("clock-date", date.filter((p) => p.type !== "weekday").map((p) => p.value).join("").replace(/^[,\s]+|[,\s]+$/g, ""));
   }
 
   // ---------- pomodoro ----------
@@ -323,21 +329,28 @@
   });
 
   // ---------- sessions ----------
-  // The body between the project line and the detail line: the task list's
-  // progress (from ~/.claude/tasks) and Claude's last reply, so a card says what
-  // is going on without opening the overlay. The foot's ctx tag is a gauge
-  // against the model's window with the compaction count.
+  // A card is one compact record: the head (status, age | project@branch), the
+  // title, a body with the task progress, your last prompt and Claude's last
+  // reply clamped to the lines that fit (fitReply), the "now" line, the action
+  // row and a 2x2 grid of figures behind a dashed rule. The grid's cells sit at
+  // the same spot on every card, so the four cards read as one table: model and
+  // mode | uptime and messages; the context gauge | agents and commits.
   const CARD_HTML = `
-      <div class="card-top"><span class="pill"></span><span class="muted card-ago"></span></div>
+      <div class="card-top"><span class="pill"></span><span class="card-ago"></span><span class="card-proj"><b></b><span class="card-branch"></span></span></div>
       <div class="card-title"></div>
-      <div class="card-proj"><b></b><span class="card-branch"></span></div>
       <div class="card-body">
         <div class="card-tasks" hidden><span class="bar bar-mini"><span class="bar-fill"></span></span><span class="card-tasks-text"></span></div>
+        <div class="card-prompt" hidden></div>
         <div class="card-reply" hidden></div>
       </div>
       <div class="card-detail"></div>
       <div class="card-actions" hidden></div>
-      <div class="card-foot"><span class="tag model" hidden></span><span class="tag card-ctx"><span class="card-ctx-text"></span><span class="bar bar-mini"><span class="bar-fill"></span></span><span class="card-ctx-pct"></span><span class="card-compact" hidden></span></span><span class="tag card-agents" hidden></span><span class="tag card-msgs"></span></div>`;
+      <div class="card-meta">
+        <span class="cell"><span class="tag model" hidden></span><span class="tag card-mode" hidden></span></span>
+        <span class="cell"><span class="tag card-up" hidden></span><span class="tag card-msgs"></span></span>
+        <span class="cell card-ctx">ctx <b class="card-ctx-text"></b><span class="bar bar-mini"><span class="bar-fill"></span></span><b class="card-ctx-pct"></b><span class="card-compact" hidden></span></span>
+        <span class="cell"><span class="tag card-agents" hidden></span><span class="tag card-commits" hidden></span></span>
+      </div>`;
   const cardNodes = new Map();
   // Action row of a card (and the preset row of the overlay). Rebuilt only when
   // its key changes so a tap never lands on a freshly re-created button.
@@ -387,9 +400,9 @@
     setText(el.querySelector(".card-title"), s.name);
     setText(el.querySelector(".card-proj b"), s.project);
     setText(el.querySelector(".card-branch"), s.branch ? "@" + s.branch : "");
-    // a pending question replaces the detail line with what Claude is asking
+    // a pending question replaces the "now" line with what Claude is asking
     const q = s.question && s.question.questions && s.question.questions[0];
-    setText(el.querySelector(".card-detail"), q ? q.question : detailLine(s));
+    setText(el.querySelector(".card-detail"), q ? q.question : s.detail);
     updateActions(el.querySelector(".card-actions"), s, presets, 3);
     const tasks = el.querySelector(".card-tasks");
     tasks.hidden = !s.tasks;
@@ -397,15 +410,26 @@
       tasks.querySelector(".bar-fill").style.width = (s.tasks.total ? (100 * s.tasks.done) / s.tasks.total : 0) + "%";
       setText(tasks.querySelector(".card-tasks-text"), tasksLabel(s.tasks));
     }
-    // the reply gives way to the question (already on the detail line)
+    const prompt = el.querySelector(".card-prompt");
+    prompt.hidden = !s.last_prompt;
+    setText(prompt, s.last_prompt || "");
     const reply = el.querySelector(".card-reply");
-    reply.hidden = !!q || !s.last_reply;
-    setText(reply, reply.hidden ? "" : s.last_reply);
+    reply.hidden = !s.last_reply;
+    setText(reply, s.last_reply || "");
+    fitReply(el.querySelector(".card-body"));
     const model = el.querySelector(".tag.model");
     setText(model, s.model || "");
     model.hidden = !s.model;
+    const mode = el.querySelector(".card-mode");
+    setText(mode, modeLabel(s.permission_mode));
+    mode.hidden = !mode.textContent;
+    const up = el.querySelector(".card-up");
+    const started = s.started_at ? new Date(s.started_at).getTime() : 0;
+    up.hidden = !started;
+    setText(up, started ? "up " + fmtDuration((now - started) / 1000) : "");
+    setText(el.querySelector(".card-msgs"), `${s.messages} msgs`);
     const ctx = el.querySelector(".card-ctx"), pct = s.context_pct || 0;
-    setText(ctx.querySelector(".card-ctx-text"), "ctx " + fmtTokens(s.context_tokens));
+    setText(ctx.querySelector(".card-ctx-text"), fmtTokens(s.context_tokens));
     const fill = ctx.querySelector(".bar-fill");
     setClass(fill, "bar-fill" + (ctxHeat(pct) ? " " + ctxHeat(pct) : ""));
     fill.style.width = Math.min(100, pct) + "%";
@@ -414,15 +438,31 @@
     compact.hidden = !s.compactions;
     setText(compact, s.compactions ? `⟲${s.compactions}` : "");
     compact.title = s.compactions ? compactLabel(s) : "";
-    setText(el.querySelector(".card-msgs"), `${s.messages} msgs`);
     const agents = el.querySelector(".card-agents");
     agents.hidden = !s.agents;
     setText(agents, agentsLabel(s));
     agents.classList.toggle("active", (s.active_agents || 0) > 0);
+    const commits = el.querySelector(".card-commits");
+    commits.hidden = !s.commits;
+    setText(commits, s.commits ? commitsLabel(s.commits) : "");
   }
-  // "finished · 2 commits" on a done card (commits in its repository since it started); the detail alone otherwise
-  function detailLine(s) {
-    return s.status === "done" && s.commits ? `${s.detail} · ${commitsLabel(s.commits)}` : s.detail;
+  // The reply shows as many whole lines as the body has room for below the
+  // task row and the prompt line (the body takes the height the other rows
+  // leave). Re-fitted on every snapshot and whenever the body resizes.
+  function fitReply(body) {
+    const reply = body.querySelector(".card-reply");
+    if (reply.hidden) return;
+    const lh = parseFloat(getComputedStyle(reply).lineHeight) || 20;
+    const room = body.getBoundingClientRect().bottom - reply.getBoundingClientRect().top;
+    const lines = String(Math.max(1, Math.floor(room / lh)));
+    if (reply.style.webkitLineClamp !== lines) reply.style.webkitLineClamp = lines;
+  }
+  const bodyResized = typeof ResizeObserver === "function" ? new ResizeObserver((entries) => entries.forEach((e) => fitReply(e.target))) : null;
+  // Claude Code's permission mode, short; nothing for the default
+  const MODES = { plan: "plan", acceptEdits: "auto-edits", bypassPermissions: "bypass", dontAsk: "dont-ask" };
+  function modeLabel(mode) {
+    if (!mode || mode === "default") return "";
+    return MODES[mode] || String(mode).toLowerCase();
   }
   function commitsLabel(n) { return `${n} ${n === 1 ? "commit" : "commits"}`; }
   // "3/7 tasks · reviewing the access rules"; "5/5 tasks" once everything is done
@@ -478,6 +518,7 @@
         el = document.createElement("div");
         el.dataset.id = s.id;
         el.innerHTML = CARD_HTML;
+        if (bodyResized) bodyResized.observe(el.querySelector(".card-body"));
         cardNodes.set(s.id, el);
       }
       updateCard(el, s, now, alerted.has(s.id), lastPresets);
@@ -486,7 +527,7 @@
       prev = el;
     });
     for (const [id, el] of cardNodes) {
-      if (!seen.has(id)) { el.remove(); cardNodes.delete(id); }
+      if (!seen.has(id)) { if (bodyResized) bodyResized.unobserve(el.querySelector(".card-body")); el.remove(); cardNodes.delete(id); }
     }
     renderOverlay(sessions, now);
   }

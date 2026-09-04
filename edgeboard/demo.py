@@ -31,7 +31,7 @@ def fill_demo(state: State) -> None:
         "updated_at": now.isoformat(),
     }
 
-    def session(i, name, status, detail, model, ctx, minutes, project="it-system-of-record", branch="master", agents=0, active_agents=0, question=None, can_send=False, reply="", window=200_000, compactions=0, tasks=None, commits=0):
+    def session(i, name, status, detail, model, ctx, minutes, project="it-system-of-record", branch="master", agents=0, active_agents=0, question=None, can_send=False, reply="", window=200_000, compactions=0, tasks=None, commits=0, prompt="", mode="default"):
         return {
             "id": f"demo-{i}",
             "name": name,
@@ -47,9 +47,9 @@ def fill_demo(state: State) -> None:
             "messages": 20 + i * 7,
             "agents": agents,
             "active_agents": active_agents,
-            "last_prompt": f"Review the {name.lower()} once more and list what still blocks Monday's rollout, then start on the fixes in priority order.",
+            "last_prompt": prompt or f"Review the {name.lower()} once more and list what still blocks Monday's rollout, then start on the fixes in priority order.",
             "last_reply": reply,
-            "permission_mode": "plan" if i == 1 else "default",
+            "permission_mode": mode,
             "session_name": f"{project[:6]}-{i}",
             "can_send": can_send,
             "waiting_since": (now - timedelta(minutes=minutes)).isoformat() if status in ("idle", "attention") else None,
@@ -73,11 +73,23 @@ def fill_demo(state: State) -> None:
         ],
     }
 
+    # replies and prompts at the length the collector keeps (300 chars), so the cards show the clamp at work
     state.sessions = [
-        session(1, "HR Dashboard Monday review", "attention", "asking you a question", "opus-5", 197_000, 0, question=question, can_send=True, reply="Two options remain for the rollout order; I need your call before I touch the deploy scripts.", tasks={"total": 7, "done": 3, "current": "Reviewing the HR dashboard access rules"}),
-        session(2, "UKG process repo organization", "working", "running pytest tests/ -q", "opus-5[1m]", 251_000, 2, can_send=True, window=1_000_000, commits=2, reply="Moved the UKG exports into ukg/exports/ and the loaders into ukg/load/; running the suite once more before I touch the cron entries.", tasks={"total": 5, "done": 5, "current": ""}),
-        session(3, "Hazelwood Frost findings memo", "working", "agents running", "fable-5-1[1m]", 420_000, 1, agents=3, active_agents=2, can_send=True, window=1_000_000, compactions=1, reply="Three reviewers are reading the findings in parallel; I will merge their notes into the memo's risk section."),
-        session(4, "ITOPS features gap analysis", "idle", "waiting for you", "opus-5[1m]", 304_000, 31, agents=1, can_send=True, window=1_000_000, commits=1, reply="Gap analysis is drafted in docs/itops-gaps.md: 14 features, 5 blocking. Want me to open tickets for the blocking ones?", tasks={"total": 4, "done": 2, "current": "Open tickets for the blocking gaps"}),
+        session(1, "HR Dashboard Monday review", "attention", "asking you a question", "opus-5", 197_000, 0, question=question, can_send=True, mode="plan",
+                prompt="Go through the HR dashboard once more and list what still blocks Monday's rollout, then plan the fixes in priority order.",
+                reply="Two options remain for the rollout order; I need your call before I touch the deploy scripts.",
+                tasks={"total": 7, "done": 3, "current": "Reviewing the HR dashboard access rules"}),
+        session(2, "UKG process repo organization", "working", "running pytest tests/ -q", "opus-5[1m]", 251_000, 2, can_send=True, window=1_000_000, commits=2, mode="acceptEdits",
+                prompt="Reorganise the UKG process repo: exports, loaders and the cron entries each in their own package, tests green after every move.",
+                reply="Moved the UKG exports into ukg/exports/ and the loaders into ukg/load/, with the old import paths kept as thin shims so the cron entries keep working until I touch them. The suite passed after each move; running it once more end to end before I rewrite the cron entries and drop the shims.",
+                tasks={"total": 5, "done": 5, "current": ""}),
+        session(3, "Hazelwood Frost findings memo", "working", "agents running", "fable-5-1[1m]", 420_000, 1, agents=3, active_agents=2, can_send=True, window=1_000_000, compactions=1,
+                prompt="Turn the Hazelwood Frost findings into a memo for the steering group: risks first, then the evidence, one page.",
+                reply="Three reviewers are reading the findings in parallel: one checks the figures against the audit export, one reads the interview notes for anything the figures miss, one drafts the risk section. I will merge their notes into the memo's risk section and keep the evidence to one page as asked."),
+        session(4, "ITOPS features gap analysis", "idle", "waiting for you", "opus-5[1m]", 304_000, 31, agents=1, can_send=True, window=1_000_000, commits=1,
+                prompt="Compare the ITOPS feature list with what the vendor shipped and write up the gaps, blocking ones first.",
+                reply="Gap analysis is drafted in docs/itops-gaps.md: 14 features, 5 blocking. The blocking ones are all on the ticketing side (SLA clocks, escalation rules, the on-call rota sync); the rest are reporting and can wait for the next release. Want me to open tickets for the blocking ones?",
+                tasks={"total": 4, "done": 2, "current": "Open tickets for the blocking gaps"}),
     ][:4]
     state.sessions_summary = {"today": 21, "done": 5, "working": 2, "idle": 2, "attention": 1}
     state.spotify = {

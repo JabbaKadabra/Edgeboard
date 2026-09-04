@@ -20,7 +20,7 @@ from edgeboard.config import Settings  # noqa: E402
 from edgeboard.demo import fill_demo  # noqa: E402
 from edgeboard.server import create_app  # noqa: E402
 from edgeboard.state import State  # noqa: E402
-from tests.browsing import TestServer, free_port, launch_chromium, panel_context  # noqa: E402
+from tests.browsing import HEIGHT, WIDTH, TestServer, free_port, launch_chromium, panel_context  # noqa: E402
 
 pytestmark = pytest.mark.browser
 
@@ -153,6 +153,33 @@ def test_cards_limits_and_commit_rows_update_in_place(dash, context):
     assert page.errors == []
 
 
+def test_a_card_refits_its_reply_and_shows_mode_uptime_and_commits(dash, context):
+    page = open_dash(context, dash)
+    working = dash.first("working")
+    card = card_of(page, working)
+    reply = card.locator(".card-reply")
+    expect(card.locator(".card-tasks")).to_be_visible()
+    before = int(reply.evaluate("(el) => el.style.webkitLineClamp"))
+    # the task row goes: the reply gets that line
+    working["tasks"] = None
+    expect(card.locator(".card-tasks")).to_be_hidden()
+    expect(reply).to_have_js_property("style.webkitLineClamp", str(before + 1))
+    # the reply never spills past the body
+    assert reply.evaluate("(el) => el.getBoundingClientRect().bottom <= el.parentElement.getBoundingClientRect().bottom + 1")
+    # figures follow the snapshot: the permission mode (nothing for the default), commits on a live card, the message count
+    working["permission_mode"] = "bypassPermissions"
+    working["commits"] = 3
+    working["messages"] = 99
+    expect(card.locator(".card-mode")).to_have_text("bypass")
+    expect(card.locator(".card-commits")).to_have_text("3 commits")
+    expect(card.locator(".card-msgs")).to_have_text("99 msgs")
+    working["permission_mode"] = "default"
+    expect(card.locator(".card-mode")).to_be_hidden()
+    # uptime counts from started_at and keeps ticking
+    expect(card.locator(".card-up")).to_have_text(re.compile(r"^up \d+m$"))
+    assert page.errors == []
+
+
 def test_the_page_reloads_itself_when_the_server_build_changes(dash, context):
     page = open_dash(context, dash)
     assert page.evaluate("performance.getEntriesByType('navigation')[0].type") == "navigate"
@@ -210,6 +237,22 @@ def test_tapping_the_mascot_runs_one_pomodoro_loop(dash, context):
     expect(mascot).not_to_have_class(re.compile(r"\bbreak\b"))
     assert page.evaluate("window.__chimes") == [880, 660, 990, 990, 784, 523]
     assert page.errors == []
+
+
+def test_the_clock_reads_like_a_watch_in_twelve_and_twenty_four_hour_locales(dash, browser):
+    # hour:minute big, the seconds ticking beside them under the meridiem (12 h locales only),
+    # the date on its own line with the weekday split from the rest
+    for locale, hm, ampm, day, date in (("en-US", "5:07", "PM", "Wednesday", "Sep 30"), ("de-DE", "17:07", "", "Mittwoch", "30. Sep")):
+        ctx = browser.new_context(viewport={"width": WIDTH, "height": HEIGHT}, locale=locale, timezone_id="Europe/Vienna")
+        page = ctx.new_page()
+        page.clock.install(time="2026-09-30T17:07:09+02:00")
+        page.goto(dash.url + "/?kiosk=1")
+        expect(page.locator("#clock-hm")).to_have_text(hm)
+        expect(page.locator("#clock-ampm")).to_have_text(ampm)
+        expect(page.locator("#clock-s")).to_have_text(re.compile(r"^(09|1\d)$"))
+        expect(page.locator("#clock-day")).to_have_text(day)
+        expect(page.locator("#clock-date")).to_have_text(re.compile("^" + re.escape(date)))
+        ctx.close()
 
 
 def test_the_cursor_hides_in_the_kiosk_unless_debugging(dash, context):
