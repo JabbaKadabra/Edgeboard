@@ -68,7 +68,9 @@ def main() -> int:
         def do_GET(self):  # noqa: N802
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             if urllib.parse.urlparse(self.path).path != "/callback":
-                self.send_response(404); self.end_headers(); return
+                self.send_response(404)
+                self.end_headers()
+                return
             if q.get("state", [""])[0] != state:
                 result["error"] = "state mismatch"
             elif "error" in q:

@@ -13,7 +13,8 @@ def make_client(**kw):
         return 0, ""
 
     app = create_app(Settings(claude_dir=kw.pop("claude_dir", None) or Settings().claude_dir, **kw), State(), spotify_runner=runner, start_collectors=False)
-    return TestClient(app), calls
+    # the guard admits loopback hosts only; the default base URL of TestClient ("testserver") is not one
+    return TestClient(app, base_url="http://127.0.0.1:8765"), calls
 
 
 def test_state_shape():
@@ -81,7 +82,7 @@ def test_demo_mode_never_runs_playerctl():
         calls.append(args)
         return 0, ""
 
-    client = TestClient(create_app(Settings(demo=True), State(), spotify_runner=runner, start_collectors=False))
+    client = TestClient(create_app(Settings(demo=True), State(), spotify_runner=runner, start_collectors=False), base_url="http://127.0.0.1:8765")
     assert client.post("/api/spotify/next").json()["ok"] is True
     assert calls == []
 
@@ -230,7 +231,6 @@ def test_usage_429_backoff_is_capped_and_honours_retry_after(monkeypatch):
 
 
 def test_usage_429_surfaces_an_error_once_stale_for_too_long(monkeypatch):
-    import asyncio
 
     from edgeboard.server import USAGE_STALE_AFTER
 
@@ -491,3 +491,89 @@ def test_sessions_collector_expires_pending_answers(monkeypatch, tmp_path):
     c = Collectors(Settings(claude_dir=tmp_path), state, lambda a: (0, ""), answers=answers)
     asyncio.run(c._sessions())
     assert state.hooks["abc"]["question_state"] == "abandoned"
+
+
+# ---------- origin guard ----------
+
+
+def test_api_rejects_foreign_host_and_origin():
+    # A browser on the same machine can reach loopback: a cross-site "simple request"
+    # (text/plain body, no preflight) or DNS rebinding must not drive the API.
+    client, calls = make_client(demo=True)
+    evil = {"origin": "https://evil.example"}
+    assert client.post("/api/spotify/play_pause", headers=evil).status_code == 403
+    assert client.post("/api/hook", content=b'{"session_id":"demo-2","hook_event_name":"Stop"}', headers={**evil, "content-type": "text/plain"}).status_code == 403
+    assert client.get("/api/state", headers={"host": "attacker.example:8765"}).status_code == 403
+    assert client.get("/api/events", headers={"host": "attacker.example"}).status_code == 403
+    assert client.app.state.dashboard.hooks == {} and calls == []
+    assert client.get("/api/state").json()["spotify"]["status"] == "Playing"
+
+
+def test_api_accepts_loopback_hosts_and_same_origin():
+    client, _ = make_client(demo=True)
+    for host in ("127.0.0.1:8765", "localhost", "[::1]:8765", "127.0.0.1"):
+        assert client.get("/api/state", headers={"host": host}).status_code == 200, host
+    assert client.post("/api/spotify/play_pause", headers={"origin": "http://127.0.0.1:8765"}).status_code == 200
+    assert client.post("/api/spotify/play_pause", headers={"host": "localhost:8765", "origin": "http://localhost:8765"}).status_code == 200
+    # "null" origins (file://, sandboxed iframes) are not the page itself
+    assert client.post("/api/spotify/play_pause", headers={"origin": "null"}).status_code == 403
+    # the page and its assets are not gated (the kiosk loads them without an Origin anyway)
+    assert client.get("/", headers={"host": "attacker.example"}).status_code == 200
+
+
+def test_api_allows_the_configured_host():
+    client, _ = make_client(demo=True, host="192.168.1.20")
+    assert client.get("/api/state", headers={"host": "192.168.1.20:8765"}).status_code == 200
+    assert client.get("/api/state", headers={"host": "192.168.1.21:8765"}).status_code == 403
+    assert client.post("/api/spotify/next", headers={"host": "192.168.1.20:8765", "origin": "http://192.168.1.20:8765"}).status_code == 200
+
+
+def test_hook_route_requires_a_json_content_type():
+    client, _ = make_client()
+    body = b'{"session_id":"abc","hook_event_name":"Stop"}'
+    assert client.post("/api/hook", content=body, headers={"content-type": "text/plain"}).status_code == 415
+    assert client.post("/api/hook", content=body).status_code == 415
+    assert client.post("/api/hook", content=body, headers={"content-type": "application/json; charset=utf-8"}).status_code == 200
+
+
+def test_request_allowed_is_pure():
+    from edgeboard.server import request_allowed
+
+    allowed = {"127.0.0.1", "localhost", "::1"}
+    assert request_allowed("127.0.0.1:8765", None, allowed)
+    assert request_allowed("LOCALHOST", "http://localhost:8765", allowed)
+    assert request_allowed("[::1]:8765", "http://[::1]:8765", allowed)
+    assert not request_allowed("", None, allowed)
+    assert not request_allowed("127.0.0.1", "http://127.0.0.1.evil.example", allowed)
+    assert not request_allowed("127.0.0.1", "https://evil.example", allowed)
+    assert not request_allowed("evil.example", None, allowed)
+    assert not request_allowed("127.0.0.1", "not a url", allowed)
+
+
+# ---------- build id / page reload ----------
+
+
+def test_build_id_changes_with_the_static_files(tmp_path):
+    from edgeboard import __version__
+    from edgeboard.server import STATIC_DIR, build_id
+
+    build = build_id()
+    assert build.startswith(__version__ + "+") and len(build) > len(__version__) + 1
+    assert build == build_id(STATIC_DIR)  # deterministic
+    copy = tmp_path / "static"
+    copy.mkdir()
+    for name in ("app.js", "style.css", "index.html"):
+        copy.joinpath(name).write_bytes((STATIC_DIR / name).read_bytes())
+    assert build_id(copy) == build
+    with copy.joinpath("app.js").open("a") as fh:
+        fh.write("\n// changed\n")
+    assert build_id(copy) != build
+
+
+def test_snapshot_carries_the_build_and_the_page_links_assets_by_it():
+    client, _ = make_client()
+    build = client.get("/api/state").json()["version"]
+    assert "+" in build
+    html = client.get("/").text
+    assert "__BUILD__" not in html
+    assert f'src="/static/app.js?v={build}"' in html and f'href="/static/style.css?v={build}"' in html

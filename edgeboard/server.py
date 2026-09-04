@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import shutil
@@ -12,17 +13,19 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Awaitable, Callable
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
+from edgeboard import __version__
 from edgeboard.answers import Answers
 from edgeboard.collectors import claude_usage, spotify, spotify_queue
 from edgeboard.collectors.claude_inbox import find_inbox, send_message
-from edgeboard.collectors.claude_sessions import ATTENTION, IDLE, WORKING, attention_transitions, collect_sessions, os_pid_alive, prune_hooks
+from edgeboard.collectors.claude_sessions import ATTENTION, WORKING, attention_transitions, collect_sessions, os_pid_alive, prune_hooks
 from edgeboard.collectors.system import SystemSampler
 from edgeboard.config import Settings
 from edgeboard.demo import fill_demo
@@ -30,6 +33,16 @@ from edgeboard.state import State
 
 log = logging.getLogger("edgeboard")
 STATIC_DIR = Path(__file__).parent / "static"
+# The page's own files, hashed into the build id so the kiosk reloads after a deploy.
+PAGE_FILES = ("index.html", "app.js", "style.css")
+
+
+def build_id(static_dir: Path = STATIC_DIR) -> str:
+    """``<version>+<hash>`` of the page files; the snapshot carries it and the page reloads when it changes."""
+    digest = hashlib.sha1()
+    for name in PAGE_FILES:
+        digest.update((static_dir / name).read_bytes())
+    return f"{__version__}+{digest.hexdigest()[:8]}"
 
 
 class SeekBody(BaseModel):
@@ -71,6 +84,14 @@ class SendBody(BaseModel):
 
 ANSWER_WAIT_MAX = 30.0  # longest a single GET /api/answer long-poll may hang
 
+# Hosts a request may name (``Host`` header, ``Origin`` host) besides the
+# configured bind address. The server has no auth, so anything on the machine
+# that can talk to loopback must at least *be* loopback: this stops a web page
+# in the desktop browser from driving the API with a cross-site "simple
+# request" (no preflight) and DNS rebinding from reading the snapshot.
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+WILDCARD_HOSTS = frozenset({"0.0.0.0", "::", ""})
+
 
 # A rate-limited usage poll keeps the last value and backs off; only once the
 # panel has been stale this long is it worth a red error under the clock.
@@ -79,6 +100,30 @@ USAGE_BACKOFF_MAX = 10 * 60
 
 
 Notifier = Callable[[str, str], None]
+
+
+def _hostname(netloc: str) -> str:
+    """``[::1]:8765`` -> ``::1``, ``localhost:8765`` -> ``localhost``; lower-cased."""
+    try:
+        return (urlsplit(f"//{netloc}").hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def request_allowed(host: str, origin: str | None, allowed_hosts: frozenset[str] | set[str]) -> bool:
+    """Whether an API request's ``Host`` and (when sent) ``Origin`` headers name one of ``allowed_hosts``.
+
+    Browsers send ``Origin`` on every cross-site request and on same-origin
+    POSTs; a bare ``null`` (file://, sandboxed frames) is not the page itself.
+    """
+    if _hostname(host) not in allowed_hosts:
+        return False
+    if origin is None:
+        return True
+    parts = urlsplit(origin)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return False
+    return _hostname(parts.netloc) in allowed_hosts
 
 
 def desktop_notify(title: str, body: str) -> None:
@@ -321,15 +366,27 @@ def create_app(
                 await collectors.stop()
 
     app = FastAPI(title="edgeboard", lifespan=lifespan)
+    allowed_hosts = LOOPBACK_HOSTS | ({settings.host.lower()} - WILDCARD_HOSTS)
+
+    @app.middleware("http")
+    async def origin_guard(request: Request, call_next):
+        if request.url.path.startswith("/api/") and not request_allowed(request.headers.get("host", ""), request.headers.get("origin"), allowed_hosts):
+            return JSONResponse({"detail": "host or origin not allowed"}, status_code=403)
+        return await call_next(request)
+
     app.state.settings = settings
     app.state.dashboard = state
     app.state.answers = answers
     state.settings = {"alert_sound": settings.alert_sound, "presets": [{"label": label, "text": text} for label, text in settings.presets]}
+    state.build = build_id()
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    # The asset links carry the build id (``?v=``) so a reload after a deploy
+    # cannot come back from the browser cache; the kiosk may run for weeks.
+    index_html = (STATIC_DIR / "index.html").read_text(encoding="utf-8").replace("__BUILD__", state.build)
 
     @app.get("/")
     async def index():
-        return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-store"})
+        return HTMLResponse(index_html, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/state")
     async def api_state():
@@ -348,10 +405,13 @@ def create_app(
     # collector merges it into the cards and drops it after HOOK_TTL.
     @app.post("/api/hook")
     async def api_hook(request: Request):
+        # JSON only: a ``text/plain`` body is what a cross-site page can send without a preflight.
+        if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
+            raise HTTPException(status_code=415, detail="content-type must be application/json")
         try:
             body = json.loads(await request.body())
         except ValueError:
-            raise HTTPException(status_code=400, detail="body must be JSON")
+            raise HTTPException(status_code=400, detail="body must be JSON") from None
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail="body must be a JSON object")
         sid, event = body.get("session_id"), body.get("hook_event_name")
@@ -398,7 +458,7 @@ def create_app(
         try:
             await loop.run_in_executor(None, send_message, inbox, body.text)
         except OSError as exc:
-            raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}")
+            raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}") from exc
         # Until the transcript shows the new turn, let the card say what just happened.
         state.hooks[session_id] = {"session_id": session_id, "hook_event_name": "UserPromptSubmit", "prompt": body.text, "ts": time.time()}
         return {"ok": True}

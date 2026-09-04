@@ -274,8 +274,8 @@ shows a hint instead of a list. Snapshot key `spotify_queue`.
 - GPU: `nvidia-smi` query if available; else AMD sysfs
   (`/sys/class/drm/card*/device/gpu_busy_percent`, hwmon `temp1_input`,
   `mem_info_vram_used/total`); else `null`.
-- History: ring buffers (120 samples) of CPU %, GPU %, and net rates for
-  sparklines.
+- History: ring buffers (120 samples) of CPU % and GPU % for the trace; net
+  rates are current values only (nothing draws their history).
 
 ### Server (`server.py`)
 

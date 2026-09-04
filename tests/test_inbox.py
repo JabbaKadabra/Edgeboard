@@ -82,7 +82,7 @@ class _Listener:
 
     def lines(self):
         self.thread.join(timeout=2)
-        return [json.loads(l) for l in self.received.decode().splitlines()]
+        return [json.loads(line) for line in self.received.decode().splitlines()]
 
 
 def test_send_message_writes_auth_then_user_message(tmp_path):

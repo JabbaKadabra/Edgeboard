@@ -2,7 +2,6 @@ from pathlib import Path
 
 from edgeboard.config import Settings
 
-
 NO_FILE = Path("/nonexistent/.env")
 
 

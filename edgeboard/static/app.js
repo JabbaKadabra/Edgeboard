@@ -79,6 +79,7 @@
     return d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) + " " + time;
   }
   function setText(el, value) { if (el && el.textContent !== String(value)) el.textContent = String(value); }
+  function setClass(el, value) { if (el.className !== value) el.className = value; }
   function text(id, value) { setText($(id), value); }
   function heat(pct) { return pct >= 90 ? "hot" : pct >= 70 ? "warm" : ""; }
 
@@ -195,32 +196,66 @@
   setInterval(() => { tickClock(); tickPomo(); }, 1000);
 
   // ---------- usage ----------
-  function renderUsage(usage, errors) {
+  // One .limit node per window key, updated in place (like the session cards)
+  // so the bar's width transition plays and nothing is re-created every second.
+  const LIMIT_HTML = `
+        <div class="limit-label"></div>
+        <div class="limit-pct"></div>
+        <div class="bar"><div class="bar-fill"></div></div>
+        <div class="limit-reset"></div>
+        <div class="limit-pace" hidden></div>`;
+  const limitNodes = new Map();
+  function renderLimits(windows, errors) {
     const limits = $("limits");
+    if (!windows.length) {
+      limitNodes.clear();
+      const msg = errors.usage ? "usage unavailable" : "waiting for usage data…";
+      if (limits.dataset.empty !== msg) { limits.dataset.empty = msg; limits.innerHTML = `<div class="muted">${msg}</div>`; }
+      return;
+    }
+    if (limits.dataset.empty) { delete limits.dataset.empty; limits.textContent = ""; }
+    const seen = new Set();
+    let prev = null;
+    windows.forEach((w) => {
+      seen.add(w.key);
+      let el = limitNodes.get(w.key);
+      if (!el) {
+        el = document.createElement("div");
+        el.className = "limit";
+        el.innerHTML = LIMIT_HTML;
+        limitNodes.set(w.key, el);
+      }
+      updateLimit(el, w);
+      const want = prev ? prev.nextElementSibling : limits.firstElementChild;
+      if (want !== el) limits.insertBefore(el, want);
+      prev = el;
+    });
+    for (const [key, el] of limitNodes) {
+      if (!seen.has(key)) { el.remove(); limitNodes.delete(key); }
+    }
+  }
+  function updateLimit(el, w) {
+    const pct = w.utilization;
+    const pctClass = pct == null ? "na" : pct >= 90 ? "high" : pct >= 70 ? "mid" : "";
+    const pctText = pct == null ? (w.tokens != null ? fmtTokens(w.tokens) + " tok" : "n/a") : Math.round(pct) + "%";
+    setText(el.querySelector(".limit-label"), w.label);
+    const pctEl = el.querySelector(".limit-pct");
+    setText(pctEl, pctText);
+    setClass(pctEl, "limit-pct" + (pctClass ? " " + pctClass : ""));
+    const fill = el.querySelector(".bar-fill");
+    setClass(fill, "bar-fill" + (heat(pct || 0) ? " " + heat(pct || 0) : ""));
+    fill.style.width = Math.max(0, Math.min(100, pct || 0)) + "%";
+    setText(el.querySelector(".limit-reset"), w.seconds_to_reset != null ? `resets in ${fmtDuration(w.seconds_to_reset)} · ${fmtResetAt(w.resets_at)}` : "no activity in window");
+    const pace = paceLine(w), paceEl = el.querySelector(".limit-pace");
+    paceEl.hidden = !pace;
+    if (pace) { setText(paceEl, pace.text); setClass(paceEl, "limit-pace" + (pace.warn ? " warn" : "")); }
+  }
+  function renderUsage(usage, errors) {
     const windows = usage.windows || [];
     const source = usage.source;
     text("usage-source", source === "api" ? (usage.stale ? "stale" : "by plan") : source === "local" ? "estimated" : source === "demo" ? "demo" : "");
 
-    limits.innerHTML = "";
-    if (!windows.length) {
-      limits.innerHTML = `<div class="muted">${errors.usage ? "usage unavailable" : "waiting for usage data…"}</div>`;
-    }
-    windows.forEach((w) => {
-      const div = document.createElement("div");
-      div.className = "limit";
-      const pct = w.utilization;
-      const pctClass = pct == null ? "na" : pct >= 90 ? "high" : pct >= 70 ? "mid" : "";
-      const pctText = pct == null ? (w.tokens != null ? fmtTokens(w.tokens) + " tok" : "n/a") : Math.round(pct) + "%";
-      const reset = w.seconds_to_reset != null ? `resets in ${fmtDuration(w.seconds_to_reset)} · ${fmtResetAt(w.resets_at)}` : "no activity in window";
-      const pace = paceLine(w);
-      div.innerHTML = `
-        <div class="limit-label">${escapeHtml(w.label)}</div>
-        <div class="limit-pct ${pctClass}">${pctText}</div>
-        <div class="bar"><div class="bar-fill ${heat(pct || 0)}" style="width:${Math.max(0, Math.min(100, pct || 0))}%"></div></div>
-        <div class="limit-reset">${reset}</div>
-        ${pace ? `<div class="limit-pace${pace.warn ? " warn" : ""}">${pace.text}</div>` : ""}`;
-      limits.appendChild(div);
-    });
+    renderLimits(windows, errors);
 
     const t = usage.today || {};
     text("t-out", fmtTokens(t.output));
@@ -778,7 +813,15 @@
     el.hidden = msgs.length === 0;
     setText(el, msgs.join("  ·  "));
   }
+  // The server's build id (version + hash of the page files). A change means a
+  // deploy happened under a page that may run for weeks: reload rather than
+  // render new snapshots with old code.
+  let build = null;
   function render(snap) {
+    if (snap.version) {
+      if (build !== null && snap.version !== build) { location.reload(); return; }
+      build = snap.version;
+    }
     const now = Date.now();
     const errors = snap.errors || {};
     try { renderErrors(errors); } catch (e) { console.error("errors", e); }

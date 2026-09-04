@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
-from edgeboard.collectors.claude_transcripts import PROMPT_MAX, SessionFacts, SessionParser, clean_text, iter_entries, read_transcript_bytes, short_model, tool_hint
+from edgeboard.collectors.claude_transcripts import PROMPT_MAX, SessionFacts, SessionParser, clean_text, iter_entries, read_new_lines, read_transcript_bytes, short_model, tool_hint
 from edgeboard.config import Settings
 
 ATTENTION = "attention"  # Claude is blocked on the user: a permission prompt or a question
@@ -280,15 +280,11 @@ _facts_cache: dict[Path, _Cached] = {}
 
 
 def _consume(parser: SessionParser, path: Path, start: int, end: int) -> int:
-    """Feed complete lines in ``[start, end)`` to ``parser``; return the new offset."""
-    with path.open("rb") as fh:
-        fh.seek(start)
-        data = fh.read(end - start)
-    cut = data.rfind(b"\n") + 1
-    if cut == 0:
-        return start  # no complete line yet; the writer is mid-line
-    parser.feed(iter_entries(data[:cut].decode("utf-8", errors="replace")))
-    return start + cut
+    """Feed the complete lines in ``[start, end)`` to ``parser``; return the new offset."""
+    text, offset = read_new_lines(path, start, end)
+    if text:
+        parser.feed(iter_entries(text))
+    return offset
 
 
 def load_facts(path: Path) -> tuple[SessionFacts, datetime]:

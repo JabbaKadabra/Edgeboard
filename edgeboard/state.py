@@ -34,11 +34,13 @@ class State:
     errors: dict[str, str | None] = field(default_factory=lambda: {"usage": None, "sessions": None, "spotify": None, "system": None})
     # The few settings the page needs to know (set by create_app).
     settings: dict = field(default_factory=lambda: {"alert_sound": False, "presets": []})
+    # ``<version>+<hash of the page files>`` (see ``server.build_id``); the page reloads when it changes.
+    build: str = __version__
 
     def snapshot(self) -> dict:
         return {
             "now": datetime.now(timezone.utc).isoformat(),
-            "version": __version__,
+            "version": self.build,
             "usage": self.usage,
             "sessions": self.sessions,
             "sessions_summary": self.sessions_summary,

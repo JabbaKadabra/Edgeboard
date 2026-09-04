@@ -100,16 +100,48 @@ def test_load_all_events_caches_unchanged_files(tmp_path):
     proj = tmp_path / "projects" / "-x"
     proj.mkdir(parents=True)
     path = proj / "a.jsonl"
-    path.write_text(assistant_line("m1", when=ts(1, NOW), output_tokens=100))
+    path.write_text(assistant_line("m1", when=ts(1, NOW), output_tokens=100) + "\n")
     since = NOW - timedelta(hours=24)
     assert [e.output for e in load_all_events(tmp_path, since)] == [100]
     st = path.stat()
-    path.write_text(assistant_line("m1", when=ts(1, NOW), output_tokens=900))  # same size
+    path.write_text(assistant_line("m1", when=ts(1, NOW), output_tokens=900) + "\n")  # same size
     os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
     assert [e.output for e in load_all_events(tmp_path, since)] == [100]  # unchanged mtime+size: cached
     with path.open("a") as fh:
-        fh.write("\n" + assistant_line("m2", when=ts(0.5, NOW), output_tokens=7))
-    assert [e.output for e in load_all_events(tmp_path, since)] == [900, 7]
+        fh.write(assistant_line("m2", when=ts(0.5, NOW), output_tokens=7) + "\n")
+    # grown: only the appended bytes are parsed, so the overwritten prefix stays as first read
+    assert [e.output for e in load_all_events(tmp_path, since)] == [100, 7]
+
+
+def test_load_all_events_reparses_when_a_file_shrinks(tmp_path):
+    proj = tmp_path / "projects" / "-x"
+    proj.mkdir(parents=True)
+    path = proj / "a.jsonl"
+    since = NOW - timedelta(hours=24)
+    path.write_text("\n".join([assistant_line("m1", when=ts(1, NOW), output_tokens=1), assistant_line("m2", when=ts(1, NOW), output_tokens=2)]))
+    assert [e.output for e in load_all_events(tmp_path, since)] == [1, 2]
+    path.write_text(assistant_line("m3", when=ts(1, NOW), output_tokens=3))
+    assert [e.output for e in load_all_events(tmp_path, since)] == [3]
+
+
+def test_load_all_events_waits_for_a_complete_line(tmp_path):
+    proj = tmp_path / "projects" / "-x"
+    proj.mkdir(parents=True)
+    path = proj / "a.jsonl"
+    since = NOW - timedelta(hours=24)
+    path.write_text(assistant_line("m1", when=ts(1, NOW), output_tokens=1) + "\n")
+    assert [e.output for e in load_all_events(tmp_path, since)] == [1]
+    line = assistant_line("m2", when=ts(0.5, NOW), output_tokens=2)
+    with path.open("a") as fh:
+        fh.write(line[:40])  # the writer is mid-line
+    assert [e.output for e in load_all_events(tmp_path, since)] == [1]
+    with path.open("a") as fh:
+        fh.write(line[40:] + "\n")
+    assert [e.output for e in load_all_events(tmp_path, since)] == [1, 2]
+    # a streamed duplicate of m2 in a later append replaces the earlier reading
+    with path.open("a") as fh:
+        fh.write(assistant_line("m2", when=ts(0.5, NOW), output_tokens=20) + "\n")
+    assert [e.output for e in load_all_events(tmp_path, since)] == [1, 20]
 
 
 def test_load_all_events_cache_respects_since(tmp_path):

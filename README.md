@@ -74,7 +74,9 @@ If the browser never appears, check `journalctl --user -u edgeboard-kiosk`.
 
 Both units restart on any exit (`Restart=always`), so a stray `pkill` or a
 crash only costs a few seconds of "disconnected". To stop the dashboard on
-purpose use `systemctl --user stop edgeboard` (the kiosk follows it).
+purpose use `systemctl --user stop edgeboard` (the kiosk follows it). After a
+`git pull`, `systemctl --user restart edgeboard` is enough: the page notices
+the new build id in the snapshot and reloads itself.
 
 ## Data sources
 
@@ -120,7 +122,12 @@ from `~/.claude/.credentials.json`.
 
 The server has no authentication and exposes session titles, project paths
 and usage data. Keep `EDGEBOARD_HOST` on `127.0.0.1`; if you must reach it from
-another machine, put it behind a reverse proxy that adds auth.
+another machine, put it behind a reverse proxy that adds auth. Requests to
+`/api/*` are only answered when their `Host` (and `Origin`, when a browser
+sends one) is loopback or the configured `EDGEBOARD_HOST`, so a web page open
+in your desktop browser cannot drive the API or read the snapshot; a reverse
+proxy therefore has to forward the original `Host` header (or bind the
+server to the address the proxy uses).
 
 ## Attention alerts
 
@@ -245,9 +252,11 @@ and the rest of the queue stays as it was.
 
 ```sh
 uv pip install -e ".[dev]"
+.venv/bin/ruff check .
 .venv/bin/pytest
 ```
 
+CI (`.github/workflows/ci.yml`) runs the same two commands on every push.
 `tests/` covers the transcript parser, session classification, usage windows,
 projection and timeline, playerctl parsing, sensor selection, and the HTTP
 routes.
