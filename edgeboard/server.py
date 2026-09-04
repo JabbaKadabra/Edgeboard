@@ -25,7 +25,7 @@ from edgeboard import __version__
 from edgeboard.answers import Answers
 from edgeboard.collectors import claude_usage, spotify, spotify_queue
 from edgeboard.collectors.claude_inbox import find_inbox, send_message
-from edgeboard.collectors.claude_sessions import ATTENTION, IDLE, WORKING, attention_transitions, collect_sessions, os_pid_alive, prune_hooks
+from edgeboard.collectors.claude_sessions import ATTENTION, WORKING, attention_transitions, collect_sessions, os_pid_alive, prune_hooks
 from edgeboard.collectors.system import SystemSampler
 from edgeboard.config import Settings
 from edgeboard.demo import fill_demo
@@ -411,7 +411,7 @@ def create_app(
         try:
             body = json.loads(await request.body())
         except ValueError:
-            raise HTTPException(status_code=400, detail="body must be JSON")
+            raise HTTPException(status_code=400, detail="body must be JSON") from None
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail="body must be a JSON object")
         sid, event = body.get("session_id"), body.get("hook_event_name")
@@ -458,7 +458,7 @@ def create_app(
         try:
             await loop.run_in_executor(None, send_message, inbox, body.text)
         except OSError as exc:
-            raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}")
+            raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}") from exc
         # Until the transcript shows the new turn, let the card say what just happened.
         state.hooks[session_id] = {"session_id": session_id, "hook_event_name": "UserPromptSubmit", "prompt": body.text, "ts": time.time()}
         return {"ok": True}

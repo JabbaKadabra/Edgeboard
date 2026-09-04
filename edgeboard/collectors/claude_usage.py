@@ -180,7 +180,7 @@ def timeline(events: Iterable[UsageEvent], now: datetime, hours: int = 24) -> li
         idx = int((e.ts - first).total_seconds() // 3600)
         if 0 <= idx < hours:
             sums[idx] += e.burn
-    return [TimelineBucket(hour_start=s.isoformat(), tokens=t) for s, t in zip(starts, sums)]
+    return [TimelineBucket(hour_start=s.isoformat(), tokens=t) for s, t in zip(starts, sums, strict=True)]
 
 
 def _since_last_reset(samples: list[Sample]) -> list[Sample]:
@@ -214,7 +214,7 @@ def project_window(samples: Iterable[Sample], now: datetime) -> Projection:
     else:
         mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
         var = sum((x - mx) ** 2 for x in xs)
-        slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / var
+        slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=True)) / var
     rate = round(slope, 3)
     if rate < MIN_RATE_PER_HOUR:
         return Projection()

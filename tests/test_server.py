@@ -231,7 +231,6 @@ def test_usage_429_backoff_is_capped_and_honours_retry_after(monkeypatch):
 
 
 def test_usage_429_surfaces_an_error_once_stale_for_too_long(monkeypatch):
-    import asyncio
 
     from edgeboard.server import USAGE_STALE_AFTER
 
