@@ -22,6 +22,9 @@ It shows, live:
   to it.
 - **System** – CPU load and temperature, GPU load and temperature (NVIDIA or
   AMD), memory, disk, network throughput, and a load sparkline.
+- **Git** – today's commits across the repositories your sessions work in
+  (hash, repo, subject, age, and the added / deleted line totals); a finished
+  session's card says how many commits it made.
 
 Design notes live in `docs/superpowers/specs/`.
 
@@ -44,7 +47,7 @@ EDGEBOARD_DEMO=1 .venv/bin/python -m edgeboard   # canned data, no Claude/Spotif
 Open the URL in any browser to check it. The mouse cursor is only hidden when
 the page is opened with `?kiosk=1` (which `scripts/kiosk.sh` does); append
 `?debug` to get it back on the kiosk. Collector errors appear in red under
-the clock; tap a bar of the 24 h chart to read its value.
+the clock; tap the 24 h burn curve to read the hour under your finger.
 
 ## Run on the Xeneon Edge
 
@@ -89,6 +92,7 @@ the new build id in the snapshot and reloads itself.
 | Spotify  | `playerctl -p spotify` (MPRIS over D-Bus). Set `EDGEBOARD_SPOTIFY_PLAYER` for another player name. Spotify's MPRIS position is only refreshed on play/pause/seek, so the progress bar is interpolated client-side and can drift by a few seconds. |
 | Up next  | Spotify Web API `/me/player/queue`, optional: see [Spotify queue](#spotify-queue). MPRIS does not expose the queue. |
 | System   | `psutil`, `/sys/class/hwmon`, `nvidia-smi` or `/sys/class/drm/card*/device` for AMD.                     |
+| Git      | `git log --since=<midnight> --no-merges --shortstat` in the repository of every session on the panel (its `cwd`, mapped with `git rev-parse --show-toplevel`) plus `EDGEBOARD_GIT_REPOS`, every `EDGEBOARD_GIT_INTERVAL` seconds. Merge commits are left out. |
 
 ## Configuration
 
@@ -121,6 +125,8 @@ from `~/.claude/.credentials.json`.
 | `EDGEBOARD_ANSWER_WAIT`         | `90` seconds the hook waits for a tap on the panel before the terminal asks |
 | `EDGEBOARD_CONTEXT_WINDOW`      | `200000` tokens; the context gauge's window for models without a `[1m]` marker (those get 1M) |
 | `EDGEBOARD_CONTEXT_WARN`        | `80` % of the window from which the gauge turns amber (red 10 points above) |
+| `EDGEBOARD_GIT_REPOS`           | extra repositories for the Git pane, `:`-separated paths (the sessions' own are always read) |
+| `EDGEBOARD_GIT_INTERVAL`        | `30` seconds                             |
 | `EDGEBOARD_ENV_FILE`            | `.env` (relative to the working directory) |
 
 The server has no authentication and exposes session titles, project paths
@@ -218,7 +224,7 @@ timeout. After that the card says "answer in the terminal". The hook entry
 needs `"timeout"` above the wait (120 s for the default 90 s) or Claude Code
 kills the script first.
 
-**Presets.** An idle session shows up to four buttons from
+**Presets.** An idle session shows up to three buttons from
 `EDGEBOARD_PRESETS` (`label=text|label=text`; the overlay lists them all and
 adds a free-text line). `POST /api/sessions/<id>/send {text}` writes the
 text into the session's inbox socket, the same channel other Claude Code
@@ -262,17 +268,44 @@ uv pip install -e ".[dev]"
 .venv/bin/pytest
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same two commands on every push.
+CI (`.github/workflows/ci.yml`) runs the same two commands on every push,
+and a second job runs the browser tests below in headless Chromium.
 `tests/` covers the transcript parser, session classification, usage windows,
-projection and timeline, playerctl parsing, sensor selection, and the HTTP
-routes.
+projection and timeline, playerctl parsing, git log parsing, sensor
+selection, and the HTTP routes.
 
-`tests/test_page.py` renders the demo page in headless Chromium at the
-panel's 2560×720 and checks that nothing overflows, all four columns are on
-screen, the cards and Spotify title render and the console is clean. It is
-skipped unless Playwright is installed:
+Two files run the page in headless Chromium at the panel's 2560×720 and are
+skipped unless Playwright is installed (`pytest -m browser` runs just them):
+
+- `tests/test_page.py` renders the demo page and checks that nothing
+  overflows, all three columns are on screen, the cards sit in one row, the
+  Spotify title, burn curve and commit rows render, the cards answer a
+  question and send a preset, and the console is clean. The screenshot lands
+  in `tests/artifacts/`.
+- `tests/test_behaviour.py` starts the server with the collectors off and a
+  `State` the tests mutate, so each test stages what the page must react to:
+  a session going working → idle flashes its card, raises the mascot's arms
+  and chimes (WebAudio is stubbed); cards, limits and commit rows keep their
+  DOM nodes across snapshots; a changed build id reloads the page; a stopped
+  server shows "disconnected" until the stream is back; the overlay closes
+  after 20 s and the pomodoro runs its loop under Playwright's fake clock;
+  the cursor hides only with `?kiosk=1`.
 
 ```sh
 .venv/bin/pip install -e ".[browser]" && .venv/bin/playwright install chromium
 .venv/bin/pytest -m browser          # screenshot lands in tests/artifacts/
+```
+
+`tests/test_kiosk.py` goes one step further and drives the real kiosk on the
+panel through Chromium's DevTools protocol: set `EDGEBOARD_KIOSK_DEBUG_PORT`
+(in `.env`, read by `scripts/kiosk.sh`) and restart `edgeboard-kiosk.service`,
+then point the tests at it. They attach to the open kiosk page and check that
+it runs the server's current build, fills the panel with nothing overflowing,
+receives snapshots, has a clean console and opens and closes the detail
+overlay on a tap; live data is never asserted on, and the tests leave the
+panel as they found it. The port has no auth and binds to loopback only;
+unset it when you are done.
+
+```sh
+EDGEBOARD_KIOSK_CDP=http://127.0.0.1:9222 .venv/bin/pytest -m kiosk
 ```

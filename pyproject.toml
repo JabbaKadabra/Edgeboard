@@ -13,7 +13,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5"]
-# tests/test_page.py: renders the demo page in Chromium at the panel's 2560x720
+# tests/test_page.py, test_behaviour.py, test_kiosk.py: the page in Chromium at the panel's 2560x720
 browser = ["playwright>=1.45"]
 
 [project.scripts]
@@ -37,4 +37,7 @@ ignore = ["B008"]  # FastAPI's Field(...) defaults
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["browser: needs Playwright and Chromium (pip install -e '.[browser]' && playwright install chromium)"]
+markers = [
+    "browser: needs Playwright and Chromium (pip install -e '.[browser]' && playwright install chromium)",
+    "kiosk: drives the live kiosk over CDP (EDGEBOARD_KIOSK_CDP=http://127.0.0.1:9222, see README)",
+]

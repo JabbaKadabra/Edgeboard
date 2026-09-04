@@ -120,7 +120,7 @@
     const d = new Date();
     const hm = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).replace(/\s?[AP]M$/i, "");
     text("clock-hm", hm);
-    text("clock-s", String(d.getSeconds()).padStart(2, "0"));
+    text("clock-s", ":" + String(d.getSeconds()).padStart(2, "0"));
     text("clock-date", d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) + (/[AP]M/i.test(d.toLocaleTimeString()) ? (d.getHours() < 12 ? " AM" : " PM") : ""));
   }
 
@@ -199,11 +199,11 @@
   // One .limit node per window key, updated in place (like the session cards)
   // so the bar's width transition plays and nothing is re-created every second.
   const LIMIT_HTML = `
-        <div class="limit-label"></div>
-        <div class="limit-pct"></div>
-        <div class="bar"><div class="bar-fill"></div></div>
-        <div class="limit-reset"></div>
-        <div class="limit-pace" hidden></div>`;
+        <span class="limit-pct"></span>
+        <div class="limit-main">
+          <div class="limit-row"><span class="limit-label"></span><span class="limit-reset"><span class="limit-reset-at"></span><span class="limit-pace" hidden></span></span></div>
+          <div class="bar"><div class="bar-fill"></div></div>
+        </div>`;
   const limitNodes = new Map();
   function renderLimits(windows, errors) {
     const limits = $("limits");
@@ -245,7 +245,7 @@
     const fill = el.querySelector(".bar-fill");
     setClass(fill, "bar-fill" + (heat(pct || 0) ? " " + heat(pct || 0) : ""));
     fill.style.width = Math.max(0, Math.min(100, pct || 0)) + "%";
-    setText(el.querySelector(".limit-reset"), w.seconds_to_reset != null ? `resets in ${fmtDuration(w.seconds_to_reset)} · ${fmtResetAt(w.resets_at)}` : "no activity in window");
+    setText(el.querySelector(".limit-reset-at"), w.seconds_to_reset != null ? `resets ${fmtResetAt(w.resets_at)}` : "no activity in window");
     const pace = paceLine(w), paceEl = el.querySelector(".limit-pace");
     paceEl.hidden = !pace;
     if (pace) { setText(paceEl, pace.text); setClass(paceEl, "limit-pace" + (pace.warn ? " warn" : "")); }
@@ -262,23 +262,16 @@
     text("t-in", fmtTokens(t.input));
     text("t-cache", fmtTokens(t.cache_read));
     text("t-write", fmtTokens(t.cache_write));
-    text("today-msgs", `${t.messages || 0} msgs`);
+    text("t-msgs", String(t.messages || 0));
 
+    // 24 h burn: the hourly buckets as one smooth amber curve over its filled area
     const tl = usage.timeline || [];
+    lastTimeline = tl;
     const peak = Math.max(1, usage.peak || 0);
-    const box = $("timeline");
-    if (box.childElementCount !== tl.length) {
-      box.innerHTML = tl.map(() => '<div class="tb"></div>').join("");
-    }
-    tl.forEach((b, i) => {
-      const el = box.children[i];
-      const h = Math.max(2, Math.round((b.tokens / peak) * 100));
-      el.style.height = h + "%";
-      el.className = "tb" + (i === tl.length - 1 ? " now" : "") + (b.tokens === 0 ? " empty" : "");
-      el.dataset.label = `${new Date(b.hour_start).toLocaleTimeString([], { hour: "2-digit" })} · ${fmtTokens(b.tokens)}`;
-      el.title = el.dataset.label;
-    });
-    peakLabel = tl.length ? `peak ${fmtTokens(usage.peak)}` : "";
+    const line = smoothPath(tl.map((b) => b.tokens), peak);
+    $("burn-line").setAttribute("d", line);
+    $("burn-area").setAttribute("d", line ? `${line} L ${BURN_W},${BURN_H} L 0,${BURN_H} Z` : "");
+    peakLabel = tl.length ? `24 h burn · peak ${fmtTokens(usage.peak)}` : "";
     if (Date.now() > tapUntil) text("timeline-peak", peakLabel);
     const labels = $("timeline-labels");
     if (tl.length && labels.childElementCount === 0) {
@@ -294,17 +287,38 @@
     if (!w.rate_per_hour || !w.projected_full_at) return null;
     const full = new Date(w.projected_full_at).getTime();
     const reset = w.resets_at ? new Date(w.resets_at).getTime() : Infinity;
-    if (full < reset) return { warn: true, text: `at this pace 100% at ${fmtResetAt(w.projected_full_at)}` };
+    if (full < reset) return { warn: true, text: `▲ full ${fmtResetAt(w.projected_full_at)}` };
     return { warn: false, text: "safe until reset" };
   }
 
-  // Touch panels have no hover: tapping a bar shows its label for a few seconds.
-  let peakLabel = "", tapUntil = 0;
+  // The burn curve: a Catmull-Rom spline through the buckets as cubic segments
+  // in a 480x100 box (stretched by preserveAspectRatio="none"), clamped so the
+  // control points never dip below the base line.
+  const BURN_W = 480, BURN_H = 100;
+  function smoothPath(values, max) {
+    const n = values.length;
+    if (n < 2) return "";
+    const pts = values.map((v, i) => [(i * BURN_W) / (n - 1), BURN_H - (Math.max(0, v) / max) * BURN_H]);
+    const clamp = (y) => Math.max(0, Math.min(BURN_H, y));
+    let d = `M ${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
+    for (let i = 0; i < n - 1; i++) {
+      const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+      d += ` C ${(p1[0] + (p2[0] - p0[0]) / 6).toFixed(1)},${clamp(p1[1] + (p2[1] - p0[1]) / 6).toFixed(1)}`
+         + ` ${(p2[0] - (p3[0] - p1[0]) / 6).toFixed(1)},${clamp(p2[1] - (p3[1] - p1[1]) / 6).toFixed(1)}`
+         + ` ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
+    }
+    return d;
+  }
+
+  // Touch panels have no hover: tapping the curve shows the hour under the finger for a few seconds.
+  let peakLabel = "", tapUntil = 0, lastTimeline = [];
   $("timeline").addEventListener("click", (ev) => {
-    const bar = ev.target.closest(".tb");
-    if (!bar) return;
+    if (lastTimeline.length < 2) return;
+    const r = ev.currentTarget.getBoundingClientRect();
+    const i = Math.round(((ev.clientX - r.left) / Math.max(1, r.width)) * (lastTimeline.length - 1));
+    const b = lastTimeline[Math.max(0, Math.min(lastTimeline.length - 1, i))];
     tapUntil = Date.now() + 4000;
-    text("timeline-peak", bar.dataset.label || "");
+    text("timeline-peak", `${new Date(b.hour_start).toLocaleTimeString([], { hour: "2-digit" })} · ${fmtTokens(b.tokens)}`);
     setTimeout(() => { if (Date.now() >= tapUntil) text("timeline-peak", peakLabel); }, 4100);
   });
 
@@ -330,7 +344,7 @@
   //   attention + answerable question: the options of a single-choice question (or one
   //   "answer…" button that opens the overlay for multi-choice / several questions) + "terminal";
   //   a question only read from the transcript (no hook waiting) gets no buttons
-  //   idle + can_send: the first ``limit`` presets
+  //   idle + can_send: the first ``limit`` presets (three on a card, all in the overlay)
   function actionButtons(s, presets, limit) {
     const buttons = [];
     if (s.status === "attention" && s.question && s.question.answerable) {
@@ -375,8 +389,8 @@
     setText(el.querySelector(".card-branch"), s.branch ? "@" + s.branch : "");
     // a pending question replaces the detail line with what Claude is asking
     const q = s.question && s.question.questions && s.question.questions[0];
-    setText(el.querySelector(".card-detail"), q ? q.question : s.detail);
-    updateActions(el.querySelector(".card-actions"), s, presets, 4);
+    setText(el.querySelector(".card-detail"), q ? q.question : detailLine(s));
+    updateActions(el.querySelector(".card-actions"), s, presets, 3);
     const tasks = el.querySelector(".card-tasks");
     tasks.hidden = !s.tasks;
     if (s.tasks) {
@@ -406,6 +420,11 @@
     setText(agents, agentsLabel(s));
     agents.classList.toggle("active", (s.active_agents || 0) > 0);
   }
+  // "finished · 2 commits" on a done card (commits in its repository since it started); the detail alone otherwise
+  function detailLine(s) {
+    return s.status === "done" && s.commits ? `${s.detail} · ${commitsLabel(s.commits)}` : s.detail;
+  }
+  function commitsLabel(n) { return `${n} ${n === 1 ? "commit" : "commits"}`; }
   // "3/7 tasks · reviewing the access rules"; "5/5 tasks" once everything is done
   function tasksLabel(t) {
     return `${t.done}/${t.total} tasks` + (t.current ? ` · ${t.current}` : "");
@@ -446,8 +465,9 @@
     if (pomo.phase !== "break") drawClaude();
     if (fresh && settings.alert_sound) { unlockAudio(); chime("alert"); }
     const parts = [`${summary.today || 0} today`, `${summary.done || 0} done`, `${summary.working || 0} working`];
-    if (summary.attention) parts.push(`${summary.attention} need you`);
-    text("sessions-summary", parts.join(" · "));
+    if (summary.attention) parts.push(`<span class="needs-you">${summary.attention} ${summary.attention === 1 ? "needs" : "need"} you</span>`);
+    const summaryHtml = parts.join(" · ");
+    if ($("sessions-summary").innerHTML !== summaryHtml) $("sessions-summary").innerHTML = summaryHtml;
     $("sessions-empty").hidden = sessions.length > 0;
     const seen = new Set();
     let prev = null;
@@ -503,6 +523,7 @@
     text("ov-title", s.name || "");
     text("ov-cwd", s.cwd || "");
     text("ov-branch", s.branch || "–");
+    text("ov-commits", s.commits ? `${commitsLabel(s.commits)} since it started` : "none since it started");
     text("ov-model", s.model || "–");
     const started = s.started_at ? new Date(s.started_at).getTime() : 0;
     text("ov-started", started ? `${fmtTime(s.started_at)} · running ${fmtDuration((now - started) / 1000)}` : "–");
@@ -675,7 +696,7 @@
     setVolumeSlider(sp.volume);
     text("np-title", sp.title || "—");
     text("np-artist", sp.artist || "");
-    text("np-album", sp.album || "");
+    text("np-album", sp.album || "");  // CSS adds the " · " separator while it has text
     text("btn-play", sp.status === "Playing" ? "⏸" : "▶");
     const art = $("art");
     if (sp.art_url && art.dataset.src !== sp.art_url) {
@@ -817,24 +838,28 @@
   });
 
   // ---------- system ----------
-  function renderSystem(sys, errors) {
+  function renderSystem(sys, errors, settings) {
     if (!sys) return;
     const cpu = sys.cpu || {}, mem = sys.mem || {}, gpu = sys.gpu, disks = sys.disks || [], net = sys.net || {};
-    text("sys-uptime", `up ${fmtDuration(sys.uptime_s)}`);
+    const hist = sys.history || {};
+    const span = ((hist.cpu || []).length) * (Number(settings.system_interval) || 1);
+    text("sys-uptime", `up ${fmtDuration(sys.uptime_s)} · history ${fmtDuration(span)}`);
     text("sys-load", `load ${(sys.load || []).map((x) => x.toFixed(1)).join(" ")}`);
-    drawSpark(sys.history || {});
-    // Current values live in the one-line summary; the trace below is history only.
+    text("legend-cpu", `cpu ${Math.round(cpu.percent || 0)}%`);
+    text("legend-gpu", gpu ? `gpu ${Math.round(gpu.percent || 0)}%` : "gpu");
+    drawSpark(hist);
+    // Current values live in the rail under the mascot; the trace in the bottom row is history only.
     const root = disks[0];
     $("sys-line").innerHTML = [
-      `CPU <b>${Math.round(cpu.percent || 0)}%</b>${cpu.temp != null ? ` <b>${Math.round(cpu.temp)}°C</b>` : ""}`,
-      gpu ? `GPU <b>${Math.round(gpu.percent || 0)}%</b>${gpu.temp != null ? ` <b>${Math.round(gpu.temp)}°C</b>` : ""}` : "",
+      `CPU <b>${Math.round(cpu.percent || 0)}%${cpu.temp != null ? ` ${Math.round(cpu.temp)}°` : ""}</b>`,
+      gpu ? `GPU <b>${Math.round(gpu.percent || 0)}%${gpu.temp != null ? ` ${Math.round(gpu.temp)}°` : ""}</b>` : "<span></span>",
       `MEM <b>${Math.round(mem.percent || 0)}%</b>`,
-      root ? `DISK <b>${Math.round(root.percent)}%</b>` : "",
+      root ? `DISK <b>${Math.round(root.percent)}%</b>` : "<span></span>",
       `↓ <b>${fmtBytes(net.rx_bps)}/s</b>`,
       `↑ <b>${fmtBytes(net.tx_bps)}/s</b>`,
-    ].filter(Boolean).map((s) => `<span>${s}</span>`).join("");
+    ].map((s) => `<span>${s}</span>`).join("");
   }
-  const SPARK_W = 120, SPARK_H = 40;
+  const SPARK_W = 200, SPARK_H = 60;
   function sparkPoints(arr, max) {
     const n = arr.length;
     return arr.map((v, i) => `${(i / (n - 1)) * SPARK_W},${SPARK_H - (Math.max(0, Math.min(max, v)) / max) * SPARK_H}`).join(" ");
@@ -847,6 +872,31 @@
   }
   function drawSpark(hist) {
     $("spark-cpu").innerHTML = sparkArea(hist.cpu, "fill", 100) + sparkLine(hist.gpu, "gpu", 100) + sparkLine(hist.cpu, "cpu", 100);
+  }
+
+  // ---------- git ----------
+  // Today's commits across the sessions' repositories (snapshot key ``git``).
+  // Rows are keyed by hash and only rebuilt when the list changes; the age is refreshed every snapshot.
+  let gitKey = "";
+  function renderGit(g, now) {
+    g = g || {};
+    const commits = g.commits || [];
+    const head = $("git-summary");
+    const summary = g.count
+      ? `${commitsLabel(g.count)} · <span class="git-add">+${g.added || 0}</span> <span class="git-del">−${g.deleted || 0}</span>`
+      : "";
+    if (head.innerHTML !== summary) head.innerHTML = summary;
+    const box = $("git-commits");
+    const key = commits.map((c) => `${c.hash}|${c.repo}|${c.message}`).join("\n");
+    if (key !== gitKey) {
+      gitKey = key;
+      box.innerHTML = commits.map((c) => `<div class="commit" data-hash="${escapeHtml(c.hash)}">
+        <span class="c-hash">${escapeHtml(c.hash)}</span><span class="c-repo">${escapeHtml(c.repo)}</span><span class="c-msg">${escapeHtml(c.message)}</span><span class="c-ago"></span></div>`).join("");
+    }
+    commits.forEach((c, i) => { const row = box.children[i]; if (row) setText(row.querySelector(".c-ago"), fmtAgo(c.ts, now)); });
+    const empty = $("git-empty");
+    empty.hidden = commits.length > 0;
+    if (!commits.length) setText(empty, "no commits today");
   }
 
   // ---------- render root ----------
@@ -873,7 +923,8 @@
     try { renderSessions(snap.sessions || [], snap.sessions_summary || {}, now, snap.settings || {}); } catch (e) { console.error("sessions", e); }
     try { renderSpotify(snap.spotify || {}, errors); } catch (e) { console.error("spotify", e); }
     try { renderQueue(snap.spotify_queue, snap.spotify || {}, errors); } catch (e) { console.error("queue", e); }
-    try { renderSystem(snap.system, errors); } catch (e) { console.error("system", e); }
+    try { renderSystem(snap.system, errors, snap.settings || {}); } catch (e) { console.error("system", e); }
+    try { renderGit(snap.git, now); } catch (e) { console.error("git", e); }
   }
 
   // ---------- transport ----------

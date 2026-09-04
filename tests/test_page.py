@@ -7,11 +7,6 @@ The screenshot lands in ``tests/artifacts/`` (git-ignored) for eyeballing.
 
 from __future__ import annotations
 
-import os
-import shutil
-import socket
-import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -20,57 +15,36 @@ playwright = pytest.importorskip("playwright.sync_api")
 
 from edgeboard.config import Settings  # noqa: E402
 from edgeboard.server import create_app  # noqa: E402
+from tests.browsing import HEIGHT, WIDTH, TestServer, free_port, launch_chromium, overflowing, panel_context  # noqa: E402
 
 pytestmark = pytest.mark.browser
 
-WIDTH, HEIGHT = 2560, 720
 ARTIFACTS = Path(__file__).parent / "artifacts"
-
-
-def _free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
 
 
 @pytest.fixture(scope="module")
 def demo_url():
-    import uvicorn
-
-    port = _free_port()
-    app = create_app(Settings(demo=True, host="127.0.0.1", port=port))
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    deadline = time.time() + 10
-    while not server.started:
-        if time.time() > deadline:
-            pytest.fail("demo server did not start")
-        time.sleep(0.05)
-    yield f"http://127.0.0.1:{port}/?kiosk=1"
-    server.should_exit = True
-    thread.join(timeout=5)
+    port = free_port()
+    with TestServer(create_app(Settings(demo=True, host="127.0.0.1", port=port)), port) as server:
+        yield server.url + "/?kiosk=1"
 
 
 @pytest.fixture(scope="module")
 def browser():
     with playwright.sync_playwright() as p:
-        try:
-            b = p.chromium.launch()
-        except playwright.Error:
-            system = os.environ.get("EDGEBOARD_BROWSER") or shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
-            if not system:
-                pytest.skip("no Chromium: run `playwright install chromium`")
-            b = p.chromium.launch(executable_path=system)
+        b = launch_chromium(p)
         yield b
         b.close()
 
 
-def test_demo_page_fits_the_panel(demo_url, browser):
-    page = browser.new_page(viewport={"width": WIDTH, "height": HEIGHT})
-    console_errors: list[str] = []
-    page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
-    page.on("pageerror", lambda exc: console_errors.append(str(exc)))
+@pytest.fixture
+def page(browser):
+    context = panel_context(browser)
+    yield context.new_page()
+    context.close()
+
+
+def test_demo_page_fits_the_panel(demo_url, page):
     page.goto(demo_url)
     # the first snapshot renders the four demo session cards (EDGEBOARD_SESSIONS_SHOWN default)
     page.wait_for_function("document.querySelectorAll('#sessions .card').length === 4", timeout=10_000)
@@ -84,51 +58,48 @@ def test_demo_page_fits_the_panel(demo_url, browser):
     scroll = page.evaluate("[document.documentElement.scrollWidth, document.documentElement.scrollHeight]")
     assert scroll == [WIDTH, HEIGHT], f"page scrolls: {scroll}"
 
-    # all four columns are on screen, left to right, each with its own width
+    # all three columns are on screen, left to right, each with its own width
     cols = page.evaluate(
         "[...document.querySelectorAll('main.dash > .col')].map(c => { const r = c.getBoundingClientRect(); return [r.left, r.right, r.top, r.bottom]; })"
     )
-    assert len(cols) == 4
+    assert len(cols) == 3
     for left, right, top, bottom in cols:
         assert 0 <= left < right <= WIDTH and 0 <= top < bottom <= HEIGHT, cols
-    assert all(cols[i][1] <= cols[i + 1][0] + 1 for i in range(3)), cols
+    assert all(cols[i][1] <= cols[i + 1][0] + 1 for i in range(2)), cols
+    # the four cards sit in one row
+    tops = page.evaluate("[...document.querySelectorAll('#sessions .card')].map(c => Math.round(c.getBoundingClientRect().top))")
+    assert len(set(tops)) == 1, tops
+    # the widest clock reading still fits the rail
+    fits = page.evaluate("""() => {
+      const hm = document.getElementById('clock-hm'), keep = hm.textContent;
+      hm.textContent = '12:34';
+      const ok = hm.parentElement.scrollWidth <= hm.parentElement.clientWidth + 1;
+      hm.textContent = keep;
+      return ok;
+    }""")
+    assert fits, "the clock overflows the rail"
 
-    # no visible element pokes outside the viewport (overflow:hidden containers clip their own children)
-    overflow = page.evaluate(
-        """() => {
-          const out = [];
-          for (const el of document.body.querySelectorAll('*')) {
-            if (el.closest('[hidden]') || el.tagName === 'SCRIPT') continue;
-            const r = el.getBoundingClientRect();
-            if (!r.width || !r.height) continue;
-            if (r.right > %d + 1 || r.bottom > %d + 1 || r.left < -1 || r.top < -1) {
-              let p = el.parentElement, clipped = false;
-              while (p && p !== document.body) {
-                const o = getComputedStyle(p).overflow;
-                if (o !== 'visible') { clipped = true; break; }
-                p = p.parentElement;
-              }
-              if (!clipped) out.push(`${el.tagName.toLowerCase()}#${el.id}.${el.className} ${Math.round(r.right)}x${Math.round(r.bottom)}`);
-            }
-          }
-          return out;
-        }""" % (WIDTH, HEIGHT)
-    )
-    assert overflow == [], overflow
+    # no visible element pokes outside the viewport
+    assert overflowing(page, WIDTH, HEIGHT) == []
 
     assert page.text_content("#np-title") == "Midnight City"
     assert page.locator("#limits .limit-pace").count() == 2
     assert page.locator("#limits .limit-pace.warn").count() == 1
+    assert page.text_content("#t-msgs") == "279"
+    # the activity row: a drawn burn curve, the system trace with its legend values, today's commits
+    assert page.get_attribute("#burn-line", "d").startswith("M ")
+    assert page.text_content("#legend-cpu") == "cpu 6%" and page.text_content("#legend-gpu") == "gpu 6%"
+    assert "history 2m" in page.text_content("#sys-uptime")
+    assert page.locator("#git-commits .commit:visible").count() >= 4
+    assert page.text_content("#git-summary").startswith("9 commits")
+    assert "CPU" in page.text_content("#sys-line") and "DISK" in page.text_content("#sys-line")
     assert page.locator("#disconnected").is_hidden()
-    assert console_errors == []
+    assert page.errors == []
 
 
 # Runs before the answering test below: that one answers the demo question and sends a
 # preset, after which no attention or idle card is left in the module-scoped demo state.
-def test_demo_cards_fill_their_body_and_gauge_the_context(demo_url, browser):
-    page = browser.new_page(viewport={"width": WIDTH, "height": HEIGHT})
-    errors: list[str] = []
-    page.on("pageerror", lambda exc: errors.append(str(exc)))
+def test_demo_cards_fill_their_body_and_gauge_the_context(demo_url, page):
     page.goto(demo_url)
     page.wait_for_function("document.querySelectorAll('#sessions .card').length === 4", timeout=10_000)
     # the idle card carries Claude's last reply; the attention card shows its question instead
@@ -150,13 +121,10 @@ def test_demo_cards_fill_their_body_and_gauge_the_context(demo_url, browser):
     assert page.locator("#overlay").is_visible()
     assert "/" in page.text_content("#ov-ctx") and "%" in page.text_content("#ov-ctx")
     assert page.locator("#ov-tasks").is_visible()
-    assert errors == []
+    assert page.errors == []
 
 
-def test_demo_cards_offer_answers_and_presets(demo_url, browser):
-    page = browser.new_page(viewport={"width": WIDTH, "height": HEIGHT})
-    errors: list[str] = []
-    page.on("pageerror", lambda exc: errors.append(str(exc)))
+def test_demo_cards_offer_answers_and_presets(demo_url, page):
     page.goto(demo_url)
     page.wait_for_function("document.querySelectorAll('#sessions .card').length === 4", timeout=10_000)
     asking = page.locator("#sessions .card.attention").first
@@ -188,4 +156,4 @@ def test_demo_cards_offer_answers_and_presets(demo_url, browser):
     assert page.locator("#overlay").is_visible()
     assert page.locator("#ov-presets button").count() >= 3
     assert page.locator("#ov-input").is_visible()
-    assert errors == []
+    assert page.errors == []

@@ -18,6 +18,8 @@ Corsair Xeneon Edge (2560×720 touch panel) attached to an EndeavourOS
    previous / play-pause / next.
 4. System performance — CPU load + temperature, GPU load + temperature,
    memory, disk, network throughput, with short history sparklines.
+5. Git — today's commits across the repositories the sessions work in, with
+   the added / deleted line totals, and per session the commits it made.
 
 Visual direction: a terminal-multiplexer look (tmux-style panes with the
 title cut into the border, pipe-style progress bars) on a near-black Dracula palette with amber as the Claude highlight,
@@ -65,6 +67,7 @@ edgeboard/
     claude_usage.py        OAuth usage endpoint + local fallback + timeline
     spotify.py             playerctl wrapper
     system.py              psutil + hwmon + GPU
+    git.py                 today's commits per repository (git log)
   static/
     index.html, app.js, style.css
 scripts/kiosk.sh
@@ -180,6 +183,10 @@ Summary counters: sessions today, done today, working now, idle, attention.
 The page gets only the first `sessions_shown` (4) sessions after sorting
 (attention, working, idle, done); the counters cover all.
 
+Live sessions also carry `commits`: how many commits the git collector
+(below) found in the session's repository since it started, filled in by
+the server on every sessions round.
+
 Cards show, between the project line and the detail line, the task
 progress (`3/7 tasks · <current>` with a mini bar) and up to three lines of
 the last reply (two when there are tasks; a pending question replaces the
@@ -201,7 +208,7 @@ a single-choice question (plus `terminal`, which hands the question back to
 the terminal dialog), or one `answer…` button opening the overlay, where
 every question has its options as toggles (multi-choice comma-joined) and a
 `send answers` button; typed text fills questions without a selection. An
-*idle* card that `can_send` shows the first four presets; the overlay lists
+*idle* card that `can_send` shows the first three presets; the overlay lists
 them all with a free-text line. Buttons stop propagation (they never open
 the overlay), stay busy until the server answers, show `sent` for 3 s and
 report failures on the red error line. Both flows are mechanisms Claude Code
@@ -301,6 +308,24 @@ shows a hint instead of a list. Snapshot key `spotify_queue`.
 - History: ring buffers (120 samples) of CPU % and GPU % for the trace; net
   rates are current values only (nothing draws their history).
 
+### Git (`git.py`)
+
+The Git pane lists today's commits across the repositories the sessions
+work in. Every `EDGEBOARD_GIT_INTERVAL` (30 s) the collector takes the
+`cwd` of each session on the panel plus `EDGEBOARD_GIT_REPOS`
+(`:`-separated paths), maps each to its repository root with
+`git rev-parse --show-toplevel` (paths outside a repository are skipped),
+and runs `git log --since=<local midnight> --no-merges --shortstat` once
+per root with a record-separated format (`parse_log` is pure). Commits are
+sorted newest first across repositories; the snapshot's `git` block is
+`{commits: [{hash, repo, path, message, ts, author, added, deleted}] (first
+20), count, added, deleted}` with the totals over every commit. The same
+list gives each session its `commits` (`commits_since`: commits whose
+repository contains the session's `cwd` and whose committer date is not
+before `started_at`). Until the sessions loop has run there is nothing to
+scan, so the loop retries after 5 s. Errors land in `errors.git`; git is
+run through the same injectable runner shape as playerctl.
+
 ### Server (`server.py`)
 
 - `GET /` static index; `/static/*` assets.
@@ -327,23 +352,33 @@ shows a hint instead of a list. Snapshot key `spotify_queue`.
   session's hook state becomes `UserPromptSubmit` so the card reads
   "working on your prompt" until the transcript catches up. Demo mode only
   mutates its canned sessions and never opens a socket.
-- Snapshot `settings` = `{alert_sound, presets: [{label, text}], context_warn}`.
+- Snapshot `settings` = `{alert_sound, presets: [{label, text}], context_warn,
+  system_interval}`.
 - Binds `127.0.0.1:8765` by default (`EDGEBOARD_HOST`, `EDGEBOARD_PORT`).
 
 ### Frontend
 
 Fixed 2560×720 layout via CSS grid, but fluid enough to preview in a normal
-browser window. Four columns:
+browser window. Three columns (the "Edgeboard Improved" Claude Design):
 
-1. Pixel mascot + big clock + date (left, 300 px).
-2. Limits (5-hour and weekly bars with % and "resets in"), Today counters,
-   24 h burn histogram, then a System pane with the one-line summary
-   (CPU/GPU/MEM/DISK/net) over a CPU+GPU history trace (620 px).
-3. Session cards in a fixed 2×2 grid, large type (flexible).
-4. Spotify pane filling the column: album art, track, a 28 px seekable
-   progress bar that shows the target time while pressed, three 64 px touch
-   buttons, a slim volume slider, and the scrollable "up next" list where a
-   tap on a row skips to that track (400 px).
+1. The rail (260 px): the big clock with the seconds and date on a line
+   under it, the pomodoro box, the red error line, the pixel mascot, and a
+   two-column grid of the current system figures (CPU % and °, GPU % and °,
+   MEM, DISK, ↓ and ↑ rates) behind a dashed rule.
+2. The centre (flexible), three rows: a one-row Limits pane (per window the
+   big %, "resets HH:MM · ▲ full HH:MM" and a 16 px bar; today's counters
+   out / in / cache rd / cache wr / msgs behind a dashed rule); the Sessions
+   pane with the four cards in one row; then a 168 px row of three panes:
+   Activity (the 24 h burn as a smooth amber curve with hour labels, a tap
+   reads the hour under the finger), System (the CPU+GPU history trace with
+   the current percentages in its legend and the load averages) and Git
+   today (the commit rows `hash repo subject age`, with `N commits · +added
+   −deleted` in the head).
+3. Spotify pane filling the column (400 px): a 200 px square of album art
+   over the centred title and "artist · album", a 32 px seekable progress
+   bar that shows the target time while pressed, three 72 px touch buttons,
+   a slim volume slider, and the scrollable "up next" list where a tap on a
+   row skips to that track.
 
 Colours (Dracula on a near-black ground): background and panes `#15161d`,
 raised surfaces `#1e1f28`, borders `#363848`, text `#f8f8f2`, muted

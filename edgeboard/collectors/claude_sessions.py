@@ -77,6 +77,7 @@ class Session:
     last_compact_at: str | None = None
     last_compact_trigger: str = ""
     tasks: dict | None = None  # ``{total, done, current}`` from ~/.claude/tasks/<session>/, see ``summarize_tasks``
+    commits: int = 0  # commits in the session's repository since it started (filled by the server from the git collector)
 
     def to_dict(self) -> dict:
         return asdict(self)

@@ -31,7 +31,7 @@ def fill_demo(state: State) -> None:
         "updated_at": now.isoformat(),
     }
 
-    def session(i, name, status, detail, model, ctx, minutes, project="it-system-of-record", branch="master", agents=0, active_agents=0, question=None, can_send=False, reply="", window=200_000, compactions=0, tasks=None):
+    def session(i, name, status, detail, model, ctx, minutes, project="it-system-of-record", branch="master", agents=0, active_agents=0, question=None, can_send=False, reply="", window=200_000, compactions=0, tasks=None, commits=0):
         return {
             "id": f"demo-{i}",
             "name": name,
@@ -60,6 +60,7 @@ def fill_demo(state: State) -> None:
             "last_compact_at": (now - timedelta(minutes=minutes + 12)).isoformat() if compactions else None,
             "last_compact_trigger": "auto" if compactions else "",
             "tasks": tasks,
+            "commits": commits,
         }
 
     question = {
@@ -74,9 +75,9 @@ def fill_demo(state: State) -> None:
 
     state.sessions = [
         session(1, "HR Dashboard Monday review", "attention", "asking you a question", "opus-5", 197_000, 0, question=question, can_send=True, reply="Two options remain for the rollout order; I need your call before I touch the deploy scripts.", tasks={"total": 7, "done": 3, "current": "Reviewing the HR dashboard access rules"}),
-        session(2, "UKG process repo organization", "working", "running pytest tests/ -q", "opus-5[1m]", 251_000, 2, can_send=True, window=1_000_000, reply="Moved the UKG exports into ukg/exports/ and the loaders into ukg/load/; running the suite once more before I touch the cron entries.", tasks={"total": 5, "done": 5, "current": ""}),
+        session(2, "UKG process repo organization", "working", "running pytest tests/ -q", "opus-5[1m]", 251_000, 2, can_send=True, window=1_000_000, commits=2, reply="Moved the UKG exports into ukg/exports/ and the loaders into ukg/load/; running the suite once more before I touch the cron entries.", tasks={"total": 5, "done": 5, "current": ""}),
         session(3, "Hazelwood Frost findings memo", "working", "agents running", "fable-5-1[1m]", 420_000, 1, agents=3, active_agents=2, can_send=True, window=1_000_000, compactions=1, reply="Three reviewers are reading the findings in parallel; I will merge their notes into the memo's risk section."),
-        session(4, "ITOPS features gap analysis", "idle", "waiting for you", "opus-5[1m]", 304_000, 31, agents=1, can_send=True, window=1_000_000, reply="Gap analysis is drafted in docs/itops-gaps.md: 14 features, 5 blocking. Want me to open tickets for the blocking ones?", tasks={"total": 4, "done": 2, "current": "Open tickets for the blocking gaps"}),
+        session(4, "ITOPS features gap analysis", "idle", "waiting for you", "opus-5[1m]", 304_000, 31, agents=1, can_send=True, window=1_000_000, commits=1, reply="Gap analysis is drafted in docs/itops-gaps.md: 14 features, 5 blocking. Want me to open tickets for the blocking ones?", tasks={"total": 4, "done": 2, "current": "Open tickets for the blocking gaps"}),
     ][:4]
     state.sessions_summary = {"today": 21, "done": 5, "working": 2, "idle": 2, "attention": 1}
     state.spotify = {
@@ -103,6 +104,18 @@ def fill_demo(state: State) -> None:
             {"title": "Genesis", "artist": "Grimes", "album": "Visions", "art_url": "", "length_s": 255.0},
         ],
     }
+    def commit(hash, repo, message, minutes_ago, added, deleted):
+        return {"hash": hash, "repo": repo, "path": f"/home/me/{repo}", "message": message, "ts": (now - timedelta(minutes=minutes_ago)).isoformat(), "author": "me", "added": added, "deleted": deleted}
+
+    commits = [
+        commit("a3f91c2", "it-system-of-record", "fix: session card flash restarts", 12, 40, 8),
+        commit("7be04d8", "it-system-of-record", "feat: pace projection on limits", 38, 122, 15),
+        commit("d114f7a", "blog", "post: september notes draft", 65, 88, 0),
+        commit("09cc31e", "api", "refactor: split auth middleware", 130, 96, 44),
+        commit("f82ab55", "dotfiles", "chore: prune zsh aliases", 190, 6, 21),
+        commit("31d9e04", "dotfiles", "feat: hyprland window rules", 200, 60, 0),
+    ]
+    state.git = {"commits": commits, "count": 9, "added": 412, "deleted": 88}
     cpu_hist = [30 + 25 * abs(math.sin(i / 7)) + rnd.uniform(-5, 5) for i in range(120)]
     gpu_hist = [10 + 60 * abs(math.sin(i / 11)) for i in range(120)]
     state.system = {

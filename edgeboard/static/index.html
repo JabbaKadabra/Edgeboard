@@ -11,47 +11,30 @@
 <div id="disconnected" class="badge-disconnected" hidden>disconnected</div>
 <main class="dash">
 
-  <!-- column 1: mascot, clock -->
-  <section class="col col-clock">
+  <!-- rail: clock, pomodoro, errors, mascot, current system figures -->
+  <section class="col col-rail">
+    <div class="clock"><span id="clock-hm">--:--</span><span class="clock-sub"><span id="clock-s">:--</span> · <span id="clock-date">---, --- --</span></span></div>
+    <div id="pomo" class="pomo" hidden><span id="pomo-label" class="pomo-label">focus</span><span id="pomo-time">25:00</span></div>
+    <div id="err-line" class="err-line" hidden></div>
     <div id="mascot-wrap" class="mascot-wrap">
       <svg id="mascot" class="mascot" viewBox="0 0 11 8" aria-hidden="true"></svg>
     </div>
-    <div id="pomo" class="pomo" hidden><span id="pomo-label" class="pomo-label">focus</span><span id="pomo-time">25:00</span></div>
-    <div class="clock">
-      <span id="clock-hm">--:--</span><span id="clock-s" class="clock-s">--</span>
-    </div>
-    <div id="clock-date" class="clock-date">---, --- --</div>
-    <div id="err-line" class="err-line" hidden></div>
+    <div id="sys-line" class="sys-line"></div>
   </section>
 
-  <!-- column 2: limits, today, timeline, system history -->
-  <section class="col col-usage">
-    <div class="panel">
-      <div class="panel-head"><span>Limits</span><span id="usage-source" class="muted"></span></div>
+  <!-- centre: limits with today's counters, the session cards, then activity / system history / git -->
+  <section class="col col-main">
+    <div class="panel panel-limits">
+      <div class="panel-head"><span>Limits <span id="usage-source" class="muted"></span></span></div>
       <div id="limits" class="limits"></div>
-    </div>
-    <div class="panel panel-today">
-      <div class="panel-head"><span>Today</span><span id="today-msgs" class="muted"></span></div>
-      <div class="today-grid">
+      <div class="today">
         <div class="stat"><b id="t-out">–</b><span>out</span></div>
         <div class="stat"><b id="t-in">–</b><span>in</span></div>
         <div class="stat"><b id="t-cache">–</b><span>cache rd</span></div>
         <div class="stat"><b id="t-write">–</b><span>cache wr</span></div>
+        <div class="stat"><b id="t-msgs">–</b><span>msgs</span></div>
       </div>
-      <div class="timeline-head"><span>24 h burn</span><span id="timeline-peak" class="muted"></span></div>
-      <div id="timeline" class="timeline"></div>
-      <div id="timeline-labels" class="timeline-labels"></div>
     </div>
-    <div class="panel panel-system">
-      <div class="panel-head"><span>System</span><span id="sys-uptime" class="muted"></span></div>
-      <div id="sys-line" class="sys-line"></div>
-      <svg id="spark-cpu" class="spark" viewBox="0 0 120 40" preserveAspectRatio="none"></svg>
-      <div class="spark-legend"><span><i class="sw sw-cpu"></i>cpu</span><span><i class="sw sw-gpu"></i>gpu</span><span id="sys-load" class="muted"></span></div>
-    </div>
-  </section>
-
-  <!-- column 3: sessions -->
-  <section class="col col-sessions">
     <div class="panel panel-sessions">
       <div class="panel-head">
         <span>Sessions <span class="muted">today</span></span>
@@ -60,22 +43,37 @@
       <div id="sessions" class="sessions"></div>
       <div id="sessions-empty" class="sessions-empty" hidden>no Claude Code sessions today</div>
     </div>
+    <div class="bottom-row">
+      <div class="panel panel-activity">
+        <div class="panel-head"><span>Activity</span><span id="timeline-peak" class="muted"></span></div>
+        <!-- 24 hourly burn buckets as a smooth area; a tap reads the bucket under the finger -->
+        <svg id="timeline" class="burn" viewBox="0 0 480 100" preserveAspectRatio="none"><path id="burn-area" class="burn-area" d=""></path><path id="burn-line" class="burn-line" d=""></path></svg>
+        <div id="timeline-labels" class="timeline-labels"></div>
+      </div>
+      <div class="panel panel-system">
+        <div class="panel-head"><span>System</span><span id="sys-uptime" class="muted"></span></div>
+        <svg id="spark-cpu" class="spark" viewBox="0 0 200 60" preserveAspectRatio="none"></svg>
+        <div class="spark-legend"><span><i class="sw sw-cpu"></i><span id="legend-cpu">cpu</span></span><span><i class="sw sw-gpu"></i><span id="legend-gpu">gpu</span></span><span id="sys-load" class="muted"></span></div>
+      </div>
+      <div class="panel panel-git">
+        <div class="panel-head"><span>Git <span class="muted">today</span></span><span id="git-summary" class="muted"></span></div>
+        <div id="git-commits" class="commits"></div>
+        <div id="git-empty" class="git-empty" hidden></div>
+      </div>
+    </div>
   </section>
 
-  <!-- column 4: spotify with the play queue -->
+  <!-- spotify with the play queue -->
   <section class="col col-side">
     <div class="panel panel-spotify" id="spotify">
       <div class="panel-head"><span>Spotify</span><span id="np-state" class="muted"></span></div>
-      <div class="np">
-        <div class="art-wrap">
-          <img id="art" class="art" alt="" hidden>
-          <div id="art-placeholder" class="art-placeholder">♪</div>
-        </div>
-        <div class="np-text">
-          <div id="np-title" class="np-title">Spotify not running</div>
-          <div id="np-artist" class="np-artist"></div>
-          <div id="np-album" class="np-album"></div>
-        </div>
+      <div class="art-wrap">
+        <img id="art" class="art" alt="" hidden>
+        <div id="art-placeholder" class="art-placeholder">♪</div>
+      </div>
+      <div class="np-text">
+        <div id="np-title" class="np-title">Spotify not running</div>
+        <div class="np-sub"><span id="np-artist" class="np-artist"></span><span id="np-album" class="np-album"></span></div>
       </div>
       <div id="np-progress" class="progress" role="slider" aria-label="seek"><div id="np-bar" class="progress-fill"></div><div id="np-seek" class="seek-target" hidden></div></div>
       <div class="np-times"><span id="np-pos">0:00</span><span id="np-len">0:00</span></div>
@@ -101,6 +99,7 @@
         <dl class="ov-grid">
           <dt>cwd</dt><dd id="ov-cwd"></dd>
           <dt>branch</dt><dd id="ov-branch"></dd>
+          <dt>commits</dt><dd id="ov-commits"></dd>
           <dt>model</dt><dd id="ov-model"></dd>
           <dt>started</dt><dd id="ov-started"></dd>
           <dt>last activity</dt><dd id="ov-activity"></dd>
