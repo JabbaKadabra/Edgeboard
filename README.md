@@ -8,13 +8,14 @@ It shows, live:
 - **Claude usage** – 5-hour and weekly limits with % used and time until
   reset, today's token totals, and a 24-hour usage histogram.
 - **Claude Code sessions** – a card per session with title, project, branch,
-  model, context size, subagent count, and whether it is working (and on
-  which tool or file), idle, done, or waiting for you to approve a permission
-  or answer a question. A question's options are on the card: tap one to
-  answer it, and tap a preset ("continue", "commit", "tests", …) to send an
-  idle session its next prompt. Tap the card itself for the full title, path,
-  timings, the last prompt and reply, every question, all presets and a
-  free-text line.
+  model, subagent count, the task list's progress and the task in hand,
+  Claude's last reply, a context gauge against the model's window (with the
+  compaction count), and whether it is working (and on which tool or file),
+  idle, done, or waiting for you to approve a permission or answer a
+  question. A question's options are on the card: tap one to answer it, and
+  tap a preset ("continue", "commit", "tests", …) to send an idle session its
+  next prompt. Tap the card itself for the full title, path, timings, the
+  last prompt and reply, every question, all presets and a free-text line.
 - **Spotify** – current track with album art, a tap-to-seek progress bar, a
   volume slider, and touch controls for previous / play-pause / next (via
   MPRIS, no API keys). The "up next" list scrolls, and tapping a track skips
@@ -118,6 +119,8 @@ from `~/.claude/.credentials.json`.
 | `EDGEBOARD_ALERT_NOTIFY`        | `0` (`notify-send` on the desktop as well)        |
 | `EDGEBOARD_PRESETS`             | `label=text\|label=text` follow-up buttons for idle cards (see [Answering from the panel](#answering-from-the-panel)) |
 | `EDGEBOARD_ANSWER_WAIT`         | `90` seconds the hook waits for a tap on the panel before the terminal asks |
+| `EDGEBOARD_CONTEXT_WINDOW`      | `200000` tokens; the context gauge's window for models without a `[1m]` marker (those get 1M) |
+| `EDGEBOARD_CONTEXT_WARN`        | `80` % of the window from which the gauge turns amber (red 10 points above) |
 | `EDGEBOARD_ENV_FILE`            | `.env` (relative to the working directory) |
 
 The server has no authentication and exposes session titles, project paths
@@ -192,7 +195,10 @@ permission" card on its own:
 The script exits 0 without output whenever the dashboard is down or says
 nothing, so Claude Code never stalls or reports an error because of it.
 Nothing is required: without hooks the cards fall back to what the
-transcript says.
+transcript says. That includes a pending question: the transcript names it
+before any hook does, so the card turns pink and shows the question with its
+options either way; only *answering* it from the panel needs the hook (the
+card says "answer in the terminal" until then).
 
 ## Answering from the panel
 

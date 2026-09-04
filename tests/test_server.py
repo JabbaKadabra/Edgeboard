@@ -330,10 +330,10 @@ def test_sessions_collector_passes_hooks_and_prunes_expired(monkeypatch, tmp_pat
 
 def test_state_exposes_alert_settings_and_presets():
     client, _ = make_client(alert_sound=True, presets=(("go", "Go on."),))
-    assert client.get("/api/state").json()["settings"] == {"alert_sound": True, "presets": [{"label": "go", "text": "Go on."}]}
-    client, _ = make_client()
+    assert client.get("/api/state").json()["settings"] == {"alert_sound": True, "presets": [{"label": "go", "text": "Go on."}], "context_warn": 80}
+    client, _ = make_client(context_warn_pct=70)
     settings = client.get("/api/state").json()["settings"]
-    assert settings["alert_sound"] is False and len(settings["presets"]) >= 3
+    assert settings["alert_sound"] is False and len(settings["presets"]) >= 3 and settings["context_warn"] == 70
 
 
 def test_sessions_loop_notifies_on_attention_transitions(monkeypatch):

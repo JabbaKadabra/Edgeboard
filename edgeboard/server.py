@@ -377,7 +377,11 @@ def create_app(
     app.state.settings = settings
     app.state.dashboard = state
     app.state.answers = answers
-    state.settings = {"alert_sound": settings.alert_sound, "presets": [{"label": label, "text": text} for label, text in settings.presets]}
+    state.settings = {
+        "alert_sound": settings.alert_sound,
+        "presets": [{"label": label, "text": text} for label, text in settings.presets],
+        "context_warn": settings.context_warn_pct,
+    }
     state.build = build_id()
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     # The asset links carry the build id (``?v=``) so a reload after a deploy

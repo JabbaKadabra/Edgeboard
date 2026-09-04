@@ -123,6 +123,36 @@ def test_demo_page_fits_the_panel(demo_url, browser):
     assert console_errors == []
 
 
+# Runs before the answering test below: that one answers the demo question and sends a
+# preset, after which no attention or idle card is left in the module-scoped demo state.
+def test_demo_cards_fill_their_body_and_gauge_the_context(demo_url, browser):
+    page = browser.new_page(viewport={"width": WIDTH, "height": HEIGHT})
+    errors: list[str] = []
+    page.on("pageerror", lambda exc: errors.append(str(exc)))
+    page.goto(demo_url)
+    page.wait_for_function("document.querySelectorAll('#sessions .card').length === 4", timeout=10_000)
+    # the idle card carries Claude's last reply; the attention card shows its question instead
+    idle = page.locator("#sessions .card.idle").first
+    assert idle.locator(".card-reply").text_content().startswith("Gap analysis")
+    assert idle.locator(".card-reply").is_visible()
+    asking = page.locator("#sessions .card.attention").first
+    assert asking.locator(".card-reply").is_hidden()
+    # a task list shows its progress and the task in hand
+    tasks = page.locator("#sessions .card .card-tasks:visible")
+    assert tasks.count() >= 1
+    assert "/" in tasks.first.locator(".card-tasks-text").text_content()
+    # the context gauge: a mini bar per card, red on the one near its window, compaction count where it happened
+    assert page.locator("#sessions .card .card-ctx .bar-fill").count() == 4
+    assert page.locator("#sessions .card .card-ctx .bar-fill.hot").count() == 1
+    assert page.locator("#sessions .card .card-ctx .card-compact:visible").count() >= 1
+    # the overlay spells the numbers out
+    page.locator("#sessions .card.attention .card-title").first.click()
+    assert page.locator("#overlay").is_visible()
+    assert "/" in page.text_content("#ov-ctx") and "%" in page.text_content("#ov-ctx")
+    assert page.locator("#ov-tasks").is_visible()
+    assert errors == []
+
+
 def test_demo_cards_offer_answers_and_presets(demo_url, browser):
     page = browser.new_page(viewport={"width": WIDTH, "height": HEIGHT})
     errors: list[str] = []

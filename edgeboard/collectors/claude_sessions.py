@@ -9,7 +9,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
-from edgeboard.collectors.claude_transcripts import PROMPT_MAX, SessionFacts, SessionParser, clean_text, iter_entries, read_new_lines, read_transcript_bytes, short_model, tool_hint
+from edgeboard.collectors.claude_transcripts import (
+    PROMPT_MAX,
+    SessionFacts,
+    SessionParser,
+    clean_text,
+    context_window_for,
+    flatten_question,
+    iter_entries,
+    read_new_lines,
+    read_transcript_bytes,
+    short_model,
+    tool_hint,
+)
 from edgeboard.config import Settings
 
 ATTENTION = "attention"  # Claude is blocked on the user: a permission prompt or a question
@@ -59,6 +71,12 @@ class Session:
     can_send: bool = False  # alive with an inbox socket: POST /api/sessions/{id}/send works
     waiting_since: str | None = None  # since when it has been idle / needing you
     question: dict | None = None  # pending AskUserQuestion, see ``question_from_hook``
+    context_window: int = 0  # the model's window (``context_window_for``); ``context_pct`` = tokens / window
+    context_pct: int = 0
+    compactions: int = 0  # how often the conversation was compacted, and the last time / trigger
+    last_compact_at: str | None = None
+    last_compact_trigger: str = ""
+    tasks: dict | None = None  # ``{total, done, current}`` from ~/.claude/tasks/<session>/, see ``summarize_tasks``
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -82,6 +100,8 @@ def classify(facts: SessionFacts, alive: bool, active_agents: int = 0) -> tuple[
     if facts.last_kind == "tool_result":
         return WORKING, "thinking"
     if facts.last_kind == "assistant" and facts.last_stop_reason == "tool_use":
+        if facts.last_tool == "AskUserQuestion":
+            return ATTENTION, "answer in the terminal"  # only a hook (see hook_override) lets the panel answer
         return WORKING, tool_detail(facts.last_tool, facts.last_tool_hint)
     if active_agents:
         return WORKING, "agents running"  # the main transcript waits on a subagent
@@ -159,24 +179,7 @@ def question_from_hook(hook: dict | None) -> dict | None:
         return None
     if hook.get("question_state") in ("answered", "abandoned"):
         return None
-    tool_use_id, tool_input = hook.get("tool_use_id"), hook.get("tool_input")
-    if not isinstance(tool_use_id, str) or not tool_use_id or not isinstance(tool_input, dict):
-        return None
-    raw = tool_input.get("questions")
-    if not isinstance(raw, list):
-        return None
-    questions = []
-    for q in raw:
-        if not isinstance(q, dict) or not isinstance(q.get("question"), str) or not q["question"]:
-            continue
-        options = q.get("options") if isinstance(q.get("options"), list) else []
-        labels = [o["label"] for o in options if isinstance(o, dict) and isinstance(o.get("label"), str) and o["label"]]
-        header = q.get("header") if isinstance(q.get("header"), str) else ""
-        questions.append({"question": q["question"], "header": header, "options": labels, "multi": bool(q.get("multiSelect"))})
-    if not questions:
-        return None
-    title = tool_input.get("title") if isinstance(tool_input.get("title"), str) else ""
-    return {"tool_use_id": tool_use_id, "title": title, "questions": questions}
+    return flatten_question(hook.get("tool_use_id"), hook.get("tool_input"))
 
 
 def attention_transitions(previous: dict[str, str], sessions: Iterable[dict]) -> list[dict]:
@@ -194,6 +197,46 @@ def attention_transitions(previous: dict[str, str], sessions: Iterable[dict]) ->
         if now == ATTENTION or (now == IDLE and before == WORKING):
             alerts.append(s)
     return alerts
+
+
+def summarize_tasks(tasks: list) -> dict | None:
+    """``{total, done, current}`` of a session's task list, None without tasks.
+
+    ``done`` counts ``completed`` tasks; ``current`` is the ``activeForm`` (else
+    ``subject``) of the first ``in_progress`` task, else of the first one that
+    is not completed, else "".
+    """
+    items = [t for t in tasks if isinstance(t, dict)]
+    if not items:
+        return None
+
+    def label(task: dict) -> str:
+        for key in ("activeForm", "subject"):
+            if isinstance(task.get(key), str) and task[key].strip():
+                return task[key].strip()
+        return ""
+
+    done = [t for t in items if t.get("status") == "completed"]
+    active = [t for t in items if t.get("status") == "in_progress"] or [t for t in items if t.get("status") != "completed"]
+    return {"total": len(items), "done": len(done), "current": label(active[0]) if active else ""}
+
+
+def read_tasks(claude_dir: Path, session_id: str) -> list[dict]:
+    """The task files of ``~/.claude/tasks/<session-id>/`` (``<n>.json``), in numeric order; [] without any."""
+    root = claude_dir / "tasks" / session_id
+    if not root.is_dir():
+        return []
+    tasks: list[tuple[int, dict]] = []
+    for path in root.glob("*.json"):
+        if path.name.startswith(".") or not path.stem.isdigit():
+            continue
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict):
+            tasks.append((int(path.stem), data))
+    return [data for _, data in sorted(tasks, key=lambda item: item[0])]
 
 
 def prune_hooks(hooks: dict[str, dict], now: float) -> dict[str, dict]:
@@ -318,6 +361,8 @@ def _build(
     headless: bool = False,
     session_name: str = "",
     socket_path: str = "",
+    context_window: int = 200_000,
+    tasks: list | None = None,
 ) -> Session:
     facts = SessionFacts()
     mtime: datetime | None = None
@@ -345,6 +390,14 @@ def _build(
     waiting_since = None
     if status in (IDLE, ATTENTION):
         waiting_since = _iso(datetime.fromtimestamp(float(hook["ts"]), tz=timezone.utc)) if fresh else last_activity
+    # A question is answerable from the panel only while the hook script waits for
+    # it; the transcript's own copy is shown for reading (answer in the terminal).
+    question = question_from_hook(hook) if fresh else None
+    if question is not None:
+        question = {**question, "answerable": True}
+    elif status == ATTENTION and facts.question is not None:
+        question = {**facts.question, "answerable": False}
+    window = context_window_for(facts.model, context_window)
     return Session(
         id=session_id,
         name=facts.title or (Path(cwd).name if cwd else "session"),
@@ -366,7 +419,13 @@ def _build(
         session_name=session_name,
         can_send=bool(alive and not headless and socket_path and os.path.exists(socket_path)),
         waiting_since=waiting_since,
-        question=question_from_hook(hook) if fresh else None,
+        question=question,
+        context_window=window,
+        context_pct=round(100 * facts.context_tokens / window) if window else 0,
+        compactions=facts.compactions,
+        last_compact_at=_iso(facts.last_compact_ts),
+        last_compact_trigger=facts.last_compact_trigger,
+        tasks=summarize_tasks(tasks or []),
     )
 
 
@@ -392,7 +451,11 @@ def collect_sessions(
         seen.add(sid)
         path = find_transcript(settings.claude_dir, sid)
         sessions.append(
-            _build(sid, path, info["_alive"], info.get("startedAt"), info.get("cwd", ""), now, hooks.get(sid), session_name=info["name"], socket_path=info["messagingSocketPath"])
+            _build(
+                sid, path, info["_alive"], info.get("startedAt"), info.get("cwd", ""), now, hooks.get(sid),
+                session_name=info["name"], socket_path=info["messagingSocketPath"],
+                context_window=settings.context_window, tasks=read_tasks(settings.claude_dir, sid),
+            )
         )
 
     # Transcripts touched today whose process is gone: finished sessions.
@@ -413,7 +476,7 @@ def collect_sessions(
     for mtime, path in finished[: settings.done_sessions_limit]:
         seen.add(path.stem)
         recent = now.timestamp() - mtime < HEADLESS_ACTIVE_SECS
-        sessions.append(_build(path.stem, path, recent, None, "", now, hooks.get(path.stem), headless=True))
+        sessions.append(_build(path.stem, path, recent, None, "", now, hooks.get(path.stem), headless=True, context_window=settings.context_window))
     for stale in [p for p in _facts_cache if p.stem not in seen]:
         _facts_cache.pop(stale, None)
 

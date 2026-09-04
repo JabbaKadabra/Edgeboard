@@ -86,6 +86,10 @@ class Settings:
     # before the terminal dialog takes over (scripts/edgeboard-hook.py).
     presets: tuple[tuple[str, str], ...] = DEFAULT_PRESETS
     answer_wait: float = 90.0
+    # Context gauge on the session cards: the window of models without a ``[1m]``
+    # marker, and the utilization (%) from which the gauge turns amber (red 10 above).
+    context_window: int = 200_000
+    context_warn_pct: int = 80
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None, env_file: Path | None = None) -> "Settings":
@@ -129,4 +133,6 @@ class Settings:
             alert_notify=get("ALERT_NOTIFY", defaults.alert_notify),
             presets=parse_presets(get("PRESETS", "")),
             answer_wait=get("ANSWER_WAIT", defaults.answer_wait),
+            context_window=get("CONTEXT_WINDOW", defaults.context_window),
+            context_warn_pct=get("CONTEXT_WARN", defaults.context_warn_pct),
         )

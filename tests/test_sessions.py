@@ -488,3 +488,115 @@ def test_waiting_since_is_only_set_while_idle_or_attention(tmp_path):
     idle = collect_sessions(settings, pid_alive=lambda pid: pid == 4242)[0][0]
     assert idle.status == IDLE and idle.waiting_since == idle.last_activity
     assert idle.permission_mode == "acceptEdits"
+
+
+# ---------- questions seen in the transcript (no hook needed to show them) ----------
+def test_classify_pending_question_needs_attention():
+    from edgeboard.collectors.claude_sessions import ATTENTION
+
+    assert classify(_tool("AskUserQuestion"), True) == (ATTENTION, "answer in the terminal")
+    assert classify(_tool("AskUserQuestion"), False) == (DONE, "finished")
+
+
+def _asking_dir(tmp_path: Path) -> Settings:
+    settings = _live_dir(tmp_path)
+    transcript = settings.claude_dir / "projects" / "-home-me-proj" / f"{SESSION}.jsonl"
+    transcript.write_text("\n".join([user_line("Deploy it"), assistant_line("m1", stop_reason="tool_use", text=None, tool=("AskUserQuestion", _ASK))]))
+    return settings
+
+
+def test_transcript_question_shows_but_only_a_hook_makes_it_answerable(tmp_path):
+    from edgeboard.collectors.claude_sessions import ATTENTION
+
+    settings = _asking_dir(tmp_path)
+    now = datetime.now(timezone.utc)
+    live = collect_sessions(settings, now, pid_alive=lambda pid: pid == 4242)[0][0]
+    assert (live.status, live.detail) == (ATTENTION, "answer in the terminal")
+    assert live.question["tool_use_id"] == "toolu_1" and live.question["answerable"] is False
+    assert live.question["questions"][0]["question"] == "Deploy where?"
+    hooks = {SESSION: _hook("PreToolUse", now.timestamp(), tool_name="AskUserQuestion", tool_use_id="toolu_1", tool_input=_ASK)}
+    live = collect_sessions(settings, now, pid_alive=lambda pid: pid == 4242, hooks=hooks)[0][0]
+    assert (live.status, live.detail) == (ATTENTION, "asking you a question")
+    assert live.question["answerable"] is True
+    abandoned = {SESSION: {**hooks[SESSION], "question_state": "abandoned"}}
+    live = collect_sessions(settings, now, pid_alive=lambda pid: pid == 4242, hooks=abandoned)[0][0]
+    assert (live.status, live.detail, live.question["answerable"]) == (ATTENTION, "answer in the terminal", False)
+
+
+def test_headless_transcript_with_a_question_is_finished(tmp_path):
+    settings = _asking_dir(tmp_path)
+    (settings.claude_dir / "sessions" / "4242.json").unlink()
+    live = collect_sessions(settings, datetime.now(timezone.utc), pid_alive=lambda pid: False)[0][0]
+    assert (live.status, live.question) == (DONE, None)
+
+
+# ---------- context gauge ----------
+def test_session_carries_context_window_and_compactions(tmp_path):
+    from tests.fixtures import compact_line
+
+    settings = _live_dir(tmp_path)
+    transcript = settings.claude_dir / "projects" / "-home-me-proj" / f"{SESSION}.jsonl"
+    transcript.write_text("\n".join([user_line("q"), compact_line(trigger="manual"), assistant_line("m1", model="claude-opus-4-8[1m]", input_tokens=400_000, cache_read=0, cache_write=0)]))
+    live = collect_sessions(settings, datetime.now(timezone.utc), pid_alive=lambda pid: pid == 4242)[0][0]
+    assert (live.model, live.context_tokens, live.context_window, live.context_pct) == ("opus-4-8[1m]", 400_000, 1_000_000, 40)
+    assert (live.compactions, live.last_compact_trigger) == (1, "manual")
+    assert live.last_compact_at.startswith("2026-09-03T12:00")
+    d = live.to_dict()
+    assert {"context_window", "context_pct", "compactions", "last_compact_at", "last_compact_trigger"} <= set(d)
+
+
+def test_context_window_default_comes_from_settings(tmp_path):
+    settings = Settings(claude_dir=_live_dir(tmp_path).claude_dir, context_window=100_000)
+    live = collect_sessions(settings, datetime.now(timezone.utc), pid_alive=lambda pid: pid == 4242)[0][0]
+    assert (live.context_tokens, live.context_window, live.context_pct) == (1210, 100_000, 1)
+    assert live.compactions == 0 and live.last_compact_at is None
+
+
+# ---------- task list ----------
+def test_summarize_tasks():
+    from edgeboard.collectors.claude_sessions import summarize_tasks
+
+    assert summarize_tasks([]) is None
+    tasks = [
+        {"subject": "Write tests", "status": "completed", "activeForm": "Writing tests"},
+        {"subject": "Fix parser", "status": "in_progress", "activeForm": "Fixing the parser"},
+        {"subject": "Update docs", "status": "pending", "activeForm": "Updating docs"},
+        {"subject": "Odd one", "status": "weird"},
+    ]
+    assert summarize_tasks(tasks) == {"total": 4, "done": 1, "current": "Fixing the parser"}
+    # without an in-progress task the first pending one is next; subject when activeForm is missing
+    assert summarize_tasks(tasks[:1] + tasks[2:]) == {"total": 3, "done": 1, "current": "Updating docs"}
+    assert summarize_tasks([{"subject": "Only", "status": "pending"}]) == {"total": 1, "done": 0, "current": "Only"}
+    assert summarize_tasks([{"subject": "All done", "status": "completed"}]) == {"total": 1, "done": 1, "current": ""}
+    assert summarize_tasks(["junk", {"status": "completed"}]) == {"total": 1, "done": 1, "current": ""}
+
+
+def test_read_tasks_ignores_dotfiles_and_junk(tmp_path):
+    from edgeboard.collectors.claude_sessions import read_tasks
+    from tests.fixtures import task_json
+
+    assert read_tasks(tmp_path, SESSION) == []
+    d = tmp_path / "tasks" / SESSION
+    d.mkdir(parents=True)
+    (d / ".lock").write_text("")
+    (d / ".highwatermark").write_text("3")
+    (d / "2.json").write_text(task_json(2, "Second", "in_progress", "Doing the second"))
+    (d / "1.json").write_text(task_json(1, "First", "completed"))
+    (d / "10.json").write_text(task_json(10, "Tenth"))
+    (d / "bad.json").write_text("{nope")
+    assert [t["subject"] for t in read_tasks(tmp_path, SESSION)] == ["First", "Second", "Tenth"]  # numeric order
+
+
+def test_live_sessions_carry_their_task_summary(tmp_path):
+    from tests.fixtures import task_json
+
+    settings = _live_dir(tmp_path)
+    d = settings.claude_dir / "tasks" / SESSION
+    d.mkdir(parents=True)
+    (d / "1.json").write_text(task_json(1, "First", "completed"))
+    (d / "2.json").write_text(task_json(2, "Second", "in_progress", "Doing the second"))
+    sessions, _ = collect_sessions(settings, datetime.now(timezone.utc), pid_alive=lambda pid: pid == 4242)
+    by_name = {s.name: s for s in sessions}
+    assert by_name["Live one"].tasks == {"total": 2, "done": 1, "current": "Doing the second"}
+    assert by_name["Old one"].tasks is None
+    assert "tasks" in by_name["Live one"].to_dict()

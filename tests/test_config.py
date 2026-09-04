@@ -93,3 +93,10 @@ def test_presets_and_answer_wait_from_env():
     from edgeboard.config import DEFAULT_PRESETS
 
     assert d.presets == DEFAULT_PRESETS and d.answer_wait == 90.0
+
+
+def test_context_window_settings():
+    s = Settings.from_env({"EDGEBOARD_CONTEXT_WINDOW": "1000000", "EDGEBOARD_CONTEXT_WARN": "70"}, env_file=NO_FILE)
+    assert s.context_window == 1_000_000 and s.context_warn_pct == 70
+    d = Settings.from_env({}, env_file=NO_FILE)
+    assert d.context_window == 200_000 and d.context_warn_pct == 80

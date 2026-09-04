@@ -130,6 +130,12 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 }
 .bar-fill.warm { background: repeating-linear-gradient(90deg, var(--accent-2) 0 6px, var(--bg) 6px 9px); }
 .bar-fill.hot { background: repeating-linear-gradient(90deg, var(--bad) 0 6px, var(--bg) 6px 9px); }
+/* inline mini bar: task progress and the context gauge on the session cards */
+.bar-mini { display: inline-block; width: 56px; height: 10px; flex: none; vertical-align: middle; background-size: 6px 100%; }
+.bar-mini, .bar-mini .bar-fill { background-image: repeating-linear-gradient(90deg, var(--border) 0 4px, transparent 4px 6px); }
+.bar-mini .bar-fill { display: block; background-image: repeating-linear-gradient(90deg, var(--accent) 0 4px, var(--bg) 4px 6px); }
+.bar-mini .bar-fill.warm { background-image: repeating-linear-gradient(90deg, var(--accent-2) 0 4px, var(--bg) 4px 6px); }
+.bar-mini .bar-fill.hot { background-image: repeating-linear-gradient(90deg, var(--bad) 0 4px, var(--bg) 4px 6px); }
 
 /* ---------- column 2 ---------- */
 .limits { display: flex; flex-direction: column; gap: 10px; }
@@ -208,6 +214,13 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 .card-title::before { content: "❯ "; color: var(--ok); }
 .card-proj { font-size: 16px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card-proj b { color: var(--pink); font-weight: 400; }
+/* body: task progress + the last reply, taking whatever height is left above the detail line */
+.card-body { flex: 1 1 auto; min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 6px; }
+.card-tasks { display: flex; align-items: center; gap: 10px; flex: none; font-size: 16px; white-space: nowrap; overflow: hidden; }
+.card-tasks .bar-mini { width: 72px; }
+.card-tasks-text { overflow: hidden; text-overflow: ellipsis; }
+.card-reply { font-size: 16px; line-height: 1.35; color: var(--muted); overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.card-tasks:not([hidden]) + .card-reply { -webkit-line-clamp: 2; }   /* whole lines only: the task row takes one */
 .card-detail { font-size: 17px; color: var(--muted); margin-top: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .attention .card-detail { color: var(--pink); }
 /* action row: option buttons for a pending question (attention) or preset follow-ups (idle); one finger-sized row, never wraps */
@@ -224,10 +237,14 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 .act.terminal { color: var(--muted); border-style: dashed; margin-left: auto; flex: none; }
 .act.busy { opacity: .5; pointer-events: none; }
 .act.sent { border-color: var(--ok); color: var(--ok); pointer-events: none; }
-.card-foot { display: flex; flex-wrap: wrap; gap: 0 8px; font-size: 15px; color: var(--muted); }
+.card-foot { display: flex; flex-wrap: nowrap; gap: 0 8px; font-size: 15px; color: var(--muted); overflow: hidden; }   /* one line; the message count at the end is what gets cut */
 .tag { white-space: nowrap; }
 .tag + .tag::before { content: "·"; margin-right: 6px; }
 .tag.model { color: var(--cyan); }
+/* context gauge: "ctx 197k ▮▮▮▮▯ 98% ⟲2" */
+.tag.card-ctx { display: inline-flex; align-items: center; gap: 5px; }
+.tag.card-ctx .bar-mini { width: 40px; height: 9px; }
+.card-compact { color: var(--done); }
 .tag.card-agents.active { color: var(--accent); }   /* a subagent wrote in the last minute */
 .sessions-empty { color: var(--muted); text-align: center; padding: 40px 0; }
 
@@ -265,6 +282,8 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 .ov-q-text b { color: var(--text); font-weight: 700; margin-right: 10px; }
 .ov-q-options, .ov-q-submit, .ov-presets, .ov-compose { display: flex; flex-wrap: wrap; gap: 8px; }
 .ov-q-options button.sel { background: var(--pink); color: var(--bg); border-color: var(--pink); }
+/* read-only options of a question the panel cannot answer (no hook waiting for it) */
+.ov-q-option { padding: 10px 16px; font-size: 17px; color: var(--muted); border: 1px dashed var(--border); }
 .ov-actions { display: flex; flex-direction: column; gap: 10px; border-top: 1px dashed var(--border); padding-top: 12px; flex: none; }
 .ov-compose { flex-wrap: nowrap; }
 .ov-compose input {

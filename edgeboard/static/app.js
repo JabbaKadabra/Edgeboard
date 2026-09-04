@@ -309,22 +309,31 @@
   });
 
   // ---------- sessions ----------
+  // The body between the project line and the detail line: the task list's
+  // progress (from ~/.claude/tasks) and Claude's last reply, so a card says what
+  // is going on without opening the overlay. The foot's ctx tag is a gauge
+  // against the model's window with the compaction count.
   const CARD_HTML = `
       <div class="card-top"><span class="pill"></span><span class="muted card-ago"></span></div>
       <div class="card-title"></div>
       <div class="card-proj"><b></b><span class="card-branch"></span></div>
+      <div class="card-body">
+        <div class="card-tasks" hidden><span class="bar bar-mini"><span class="bar-fill"></span></span><span class="card-tasks-text"></span></div>
+        <div class="card-reply" hidden></div>
+      </div>
       <div class="card-detail"></div>
       <div class="card-actions" hidden></div>
-      <div class="card-foot"><span class="tag model" hidden></span><span class="tag card-ctx"></span><span class="tag card-msgs"></span><span class="tag card-agents" hidden></span></div>`;
+      <div class="card-foot"><span class="tag model" hidden></span><span class="tag card-ctx"><span class="card-ctx-text"></span><span class="bar bar-mini"><span class="bar-fill"></span></span><span class="card-ctx-pct"></span><span class="card-compact" hidden></span></span><span class="tag card-agents" hidden></span><span class="tag card-msgs"></span></div>`;
   const cardNodes = new Map();
   // Action row of a card (and the preset row of the overlay). Rebuilt only when
   // its key changes so a tap never lands on a freshly re-created button.
-  //   attention + question: the options of a single-choice question (or one "answer…"
-  //   button that opens the overlay for multi-choice / several questions) + "terminal"
+  //   attention + answerable question: the options of a single-choice question (or one
+  //   "answer…" button that opens the overlay for multi-choice / several questions) + "terminal";
+  //   a question only read from the transcript (no hook waiting) gets no buttons
   //   idle + can_send: the first ``limit`` presets
   function actionButtons(s, presets, limit) {
     const buttons = [];
-    if (s.status === "attention" && s.question) {
+    if (s.status === "attention" && s.question && s.question.answerable) {
       const qs = s.question.questions || [];
       if (qs.length === 1 && !qs[0].multi && qs[0].options.length) {
         qs[0].options.forEach((label) => buttons.push({ text: label, act: "answer", q: qs[0].question, label }));
@@ -368,15 +377,45 @@
     const q = s.question && s.question.questions && s.question.questions[0];
     setText(el.querySelector(".card-detail"), q ? q.question : s.detail);
     updateActions(el.querySelector(".card-actions"), s, presets, 4);
+    const tasks = el.querySelector(".card-tasks");
+    tasks.hidden = !s.tasks;
+    if (s.tasks) {
+      tasks.querySelector(".bar-fill").style.width = (s.tasks.total ? (100 * s.tasks.done) / s.tasks.total : 0) + "%";
+      setText(tasks.querySelector(".card-tasks-text"), tasksLabel(s.tasks));
+    }
+    // the reply gives way to the question (already on the detail line)
+    const reply = el.querySelector(".card-reply");
+    reply.hidden = !!q || !s.last_reply;
+    setText(reply, reply.hidden ? "" : s.last_reply);
     const model = el.querySelector(".tag.model");
     setText(model, s.model || "");
     model.hidden = !s.model;
-    setText(el.querySelector(".card-ctx"), "ctx " + fmtTokens(s.context_tokens));
+    const ctx = el.querySelector(".card-ctx"), pct = s.context_pct || 0;
+    setText(ctx.querySelector(".card-ctx-text"), "ctx " + fmtTokens(s.context_tokens));
+    const fill = ctx.querySelector(".bar-fill");
+    setClass(fill, "bar-fill" + (ctxHeat(pct) ? " " + ctxHeat(pct) : ""));
+    fill.style.width = Math.min(100, pct) + "%";
+    setText(ctx.querySelector(".card-ctx-pct"), pct + "%");
+    const compact = ctx.querySelector(".card-compact");
+    compact.hidden = !s.compactions;
+    setText(compact, s.compactions ? `⟲${s.compactions}` : "");
+    compact.title = s.compactions ? compactLabel(s) : "";
     setText(el.querySelector(".card-msgs"), `${s.messages} msgs`);
     const agents = el.querySelector(".card-agents");
     agents.hidden = !s.agents;
     setText(agents, agentsLabel(s));
     agents.classList.toggle("active", (s.active_agents || 0) > 0);
+  }
+  // "3/7 tasks · reviewing the access rules"; "5/5 tasks" once everything is done
+  function tasksLabel(t) {
+    return `${t.done}/${t.total} tasks` + (t.current ? ` · ${t.current}` : "");
+  }
+  // context gauge colours: amber from settings.context_warn - 10, red from context_warn
+  let contextWarn = 80;
+  function ctxHeat(pct) { return pct >= contextWarn ? "hot" : pct >= contextWarn - 10 ? "warm" : ""; }
+  function compactLabel(s) {
+    const when = s.last_compact_at ? `, last ${fmtTime(s.last_compact_at)}` : "";
+    return `compacted ${s.compactions}×${s.last_compact_trigger ? ` (${s.last_compact_trigger})` : ""}${when}`;
   }
   // "2/3 agents" while some subagents are still writing, "3 agents" once they are quiet
   function agentsLabel(s) {
@@ -396,6 +435,7 @@
     const box = $("sessions");
     lastSessions = sessions;
     lastPresets = Array.isArray(settings.presets) ? settings.presets : [];
+    if (typeof settings.context_warn === "number") contextWarn = settings.context_warn;
     let fresh = 0;
     sessions.forEach((s) => {
       if (needsYou(prevStatus.get(s.id), s.status)) { alerted.set(s.id, s.status); fresh++; }
@@ -468,7 +508,8 @@
     text("ov-started", started ? `${fmtTime(s.started_at)} · running ${fmtDuration((now - started) / 1000)}` : "–");
     text("ov-activity", s.last_activity ? `${fmtTime(s.last_activity)} · ${fmtAgo(s.last_activity, now)} ago` : "–");
     text("ov-msgs", s.messages || 0);
-    text("ov-ctx", fmtTokens(s.context_tokens) + " tokens");
+    text("ov-ctx", `${fmtTokens(s.context_tokens)} / ${fmtTokens(s.context_window)} · ${s.context_pct || 0}%` + (s.compactions ? ` · ${compactLabel(s)}` : ""));
+    text("ov-tasks", s.tasks ? `${s.tasks.done}/${s.tasks.total}` + (s.tasks.current ? ` · ${s.tasks.current}` : " · all done") : "none");
     text("ov-agents", agentsLabel(s) || "none");
     text("ov-mode", s.permission_mode || "–");
     text("ov-waiting", s.waiting_since ? `${fmtAgo(s.waiting_since, now)} · since ${fmtTime(s.waiting_since)}` : "–");
@@ -482,10 +523,12 @@
   }
   // The full question set: every question with its options as toggles (multi-choice
   // allowed), sent together. Rebuilt when the question changes, so selections survive snapshots.
+  // A question nothing waits for (read from the transcript, or the hook gave up) is
+  // listed read-only with a note to answer it in the terminal.
   function renderQuestions(s) {
     const box = $("ov-questions");
     const q = s.status === "attention" ? s.question : null;
-    const key = q ? q.tool_use_id : "";
+    const key = q ? `${q.tool_use_id}:${q.answerable ? 1 : 0}` : "";
     box.hidden = !q;
     if (box.dataset.key === key) return;
     box.dataset.key = key;
@@ -499,18 +542,19 @@
       wrap.innerHTML = `<div class="ov-q-text">${item.header ? `<b>${escapeHtml(item.header)}</b>` : ""}${escapeHtml(item.question)}</div><div class="ov-q-options"></div>`;
       const opts = wrap.querySelector(".ov-q-options");
       item.options.forEach((label) => {
-        const btn = document.createElement("button");
-        btn.className = "act";
-        btn.textContent = label;
-        btn.dataset.act = "toggle";
-        btn.dataset.label = label;
-        opts.appendChild(btn);
+        const opt = document.createElement(q.answerable ? "button" : "span");
+        opt.className = q.answerable ? "act" : "ov-q-option";
+        opt.textContent = label;
+        if (q.answerable) { opt.dataset.act = "toggle"; opt.dataset.label = label; }
+        opts.appendChild(opt);
       });
       box.appendChild(wrap);
     });
     const submit = document.createElement("div");
     submit.className = "ov-q-submit";
-    submit.innerHTML = `<button class="act" data-act="answer-all">send answers</button><button class="act terminal" data-act="pass">answer in the terminal</button>`;
+    submit.innerHTML = q.answerable
+      ? `<button class="act" data-act="answer-all">send answers</button><button class="act terminal" data-act="pass">answer in the terminal</button>`
+      : `<span class="muted">the panel cannot answer this one: answer it in the terminal (install the hooks, see the README)</span>`;
     box.appendChild(submit);
   }
   // Answers from the overlay: the selected labels per question (comma-joined for
@@ -565,7 +609,7 @@
     else if (act === "compose") {
       const typed = $("ov-input").value.trim();
       if (!typed) return;
-      if (s.status === "attention" && s.question) { action = "answer"; body = { tool_use_id: s.question.tool_use_id, answers: collectAnswers(s) }; }
+      if (s.status === "attention" && s.question && s.question.answerable) { action = "answer"; body = { tool_use_id: s.question.tool_use_id, answers: collectAnswers(s) }; }
       else { action = "send"; body = { text: typed }; }
     }
     else return;

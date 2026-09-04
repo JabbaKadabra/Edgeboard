@@ -207,3 +207,75 @@ def test_usage_parser_is_incremental_across_feeds():
     parser.feed(iter_entries("\n".join([assistant_line("msg_1", output_tokens=50, when=ts(0.9)), assistant_line("msg_2", output_tokens=7, when=ts(0.5))])))
     assert [e.output for e in parser.events] == [50, 7]
     assert usage_events(iter_entries("\n".join([assistant_line("msg_1", output_tokens=5), assistant_line("msg_1", output_tokens=50)])))[0].output == 50
+
+
+# ---------- pending AskUserQuestion from the transcript ----------
+_ASK = {
+    "title": "Deploy",
+    "questions": [
+        {"question": "Deploy where?", "header": "Target", "options": [{"label": "staging", "description": "s"}, {"label": "prod"}], "multiSelect": False},
+        {"question": "Notify?", "options": [{"label": "slack"}, {"label": "mail"}], "multiSelect": True},
+    ],
+}
+
+
+def test_flatten_question_keeps_labels_headers_and_multi():
+    from edgeboard.collectors.claude_transcripts import flatten_question
+
+    assert flatten_question("toolu_9", _ASK) == {
+        "tool_use_id": "toolu_9",
+        "title": "Deploy",
+        "questions": [
+            {"question": "Deploy where?", "header": "Target", "options": ["staging", "prod"], "multi": False},
+            {"question": "Notify?", "header": "", "options": ["slack", "mail"], "multi": True},
+        ],
+    }
+    assert flatten_question("", _ASK) is None
+    assert flatten_question("toolu_9", {"questions": "nope"}) is None
+    assert flatten_question("toolu_9", {"questions": [{"question": ""}]}) is None
+
+
+def test_session_facts_question_is_pending_until_the_tool_result():
+    asked = "\n".join([user_line("q"), assistant_line("m1", stop_reason="tool_use", text=None, tool=("AskUserQuestion", _ASK))])
+    facts = session_facts(iter_entries(asked))
+    assert facts.last_tool == "AskUserQuestion"
+    assert facts.question["tool_use_id"] == "toolu_1"
+    assert facts.question["questions"][0]["options"] == ["staging", "prod"]
+    answered = asked + "\n" + user_line(tool_result=True, uuid="tr")
+    assert session_facts(iter_entries(answered)).question is None
+    moved_on = asked + "\n" + assistant_line("m2", text="ok")
+    assert session_facts(iter_entries(moved_on)).question is None
+
+
+# ---------- context window and compactions ----------
+def test_context_window_for_reads_the_1m_marker():
+    from edgeboard.collectors.claude_transcripts import context_window_for
+
+    assert context_window_for("claude-opus-4-8[1m]", 200_000) == 1_000_000
+    assert context_window_for("claude-sonnet-5[1M]", 200_000) == 1_000_000
+    assert context_window_for("claude-fable-5-1", 200_000) == 200_000
+    assert context_window_for("", 200_000) == 200_000
+    assert short_model("claude-opus-4-8[1m]") == "opus-4-8[1m]"
+
+
+def test_session_facts_count_compactions():
+    from tests.fixtures import compact_line
+
+    text = "\n".join([user_line("q"), assistant_line("m1"), compact_line(when=ts(2), trigger="manual"), user_line("cont", uuid="u2"), compact_line(when=ts(1)), assistant_line("m2")])
+    facts = session_facts(iter_entries(text))
+    assert facts.compactions == 2
+    assert facts.last_compact_trigger == "auto"
+    assert facts.last_compact_ts.isoformat().startswith("2026-09-03T11:00")
+    assert facts.assistant_messages == 2 and facts.last_kind == "assistant"
+
+
+def test_other_system_lines_and_bare_compactions_are_tolerated():
+    import json
+
+    from tests.fixtures import compact_line
+
+    other = json.dumps({"type": "system", "subtype": "turn_duration", "durationMs": 5, "timestamp": ts()})
+    bare = json.dumps({"type": "system", "subtype": "compact_boundary", "timestamp": ts()})
+    facts = session_facts(iter_entries("\n".join([user_line("q"), other, bare, compact_line(compactMetadata="nope")])))
+    assert facts.compactions == 2 and facts.last_compact_trigger == ""
+    assert session_facts(iter_entries(other)).compactions == 0
