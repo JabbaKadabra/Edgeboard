@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Awaitable, Callable
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -71,6 +72,14 @@ class SendBody(BaseModel):
 
 ANSWER_WAIT_MAX = 30.0  # longest a single GET /api/answer long-poll may hang
 
+# Hosts a request may name (``Host`` header, ``Origin`` host) besides the
+# configured bind address. The server has no auth, so anything on the machine
+# that can talk to loopback must at least *be* loopback: this stops a web page
+# in the desktop browser from driving the API with a cross-site "simple
+# request" (no preflight) and DNS rebinding from reading the snapshot.
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+WILDCARD_HOSTS = frozenset({"0.0.0.0", "::", ""})
+
 
 # A rate-limited usage poll keeps the last value and backs off; only once the
 # panel has been stale this long is it worth a red error under the clock.
@@ -79,6 +88,30 @@ USAGE_BACKOFF_MAX = 10 * 60
 
 
 Notifier = Callable[[str, str], None]
+
+
+def _hostname(netloc: str) -> str:
+    """``[::1]:8765`` -> ``::1``, ``localhost:8765`` -> ``localhost``; lower-cased."""
+    try:
+        return (urlsplit(f"//{netloc}").hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def request_allowed(host: str, origin: str | None, allowed_hosts: frozenset[str] | set[str]) -> bool:
+    """Whether an API request's ``Host`` and (when sent) ``Origin`` headers name one of ``allowed_hosts``.
+
+    Browsers send ``Origin`` on every cross-site request and on same-origin
+    POSTs; a bare ``null`` (file://, sandboxed frames) is not the page itself.
+    """
+    if _hostname(host) not in allowed_hosts:
+        return False
+    if origin is None:
+        return True
+    parts = urlsplit(origin)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return False
+    return _hostname(parts.netloc) in allowed_hosts
 
 
 def desktop_notify(title: str, body: str) -> None:
@@ -321,6 +354,14 @@ def create_app(
                 await collectors.stop()
 
     app = FastAPI(title="edgeboard", lifespan=lifespan)
+    allowed_hosts = LOOPBACK_HOSTS | ({settings.host.lower()} - WILDCARD_HOSTS)
+
+    @app.middleware("http")
+    async def origin_guard(request: Request, call_next):
+        if request.url.path.startswith("/api/") and not request_allowed(request.headers.get("host", ""), request.headers.get("origin"), allowed_hosts):
+            return JSONResponse({"detail": "host or origin not allowed"}, status_code=403)
+        return await call_next(request)
+
     app.state.settings = settings
     app.state.dashboard = state
     app.state.answers = answers
@@ -348,6 +389,9 @@ def create_app(
     # collector merges it into the cards and drops it after HOOK_TTL.
     @app.post("/api/hook")
     async def api_hook(request: Request):
+        # JSON only: a ``text/plain`` body is what a cross-site page can send without a preflight.
+        if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
+            raise HTTPException(status_code=415, detail="content-type must be application/json")
         try:
             body = json.loads(await request.body())
         except ValueError:
