@@ -106,5 +106,5 @@ def fill_demo(state: State) -> None:
         "net": {"rx_bps": 1.8e6, "tx_bps": 2.4e5},
         "load": [1.2, 0.9, 0.8],
         "uptime_s": 5 * 86400 + 3600,
-        "history": {"cpu": cpu_hist, "gpu": gpu_hist, "rx": [rnd.uniform(0, 3e6) for _ in range(120)], "tx": [rnd.uniform(0, 5e5) for _ in range(120)]},
+        "history": {"cpu": cpu_hist, "gpu": gpu_hist},
     }

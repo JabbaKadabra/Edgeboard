@@ -162,8 +162,6 @@ class SystemSampler:
         self.mounts = mounts
         self.cpu_hist: deque[float] = deque(maxlen=HISTORY)
         self.gpu_hist: deque[float] = deque(maxlen=HISTORY)
-        self.rx_hist: deque[float] = deque(maxlen=HISTORY)
-        self.tx_hist: deque[float] = deque(maxlen=HISTORY)
         self._last_net = None
         self._last_time = None
         self._gpu_every = 2
@@ -195,8 +193,6 @@ class SystemSampler:
             rx_bps = max(0.0, (counters.bytes_recv - self._last_net.bytes_recv) / dt)
             tx_bps = max(0.0, (counters.bytes_sent - self._last_net.bytes_sent) / dt)
         self._last_net, self._last_time = counters, now
-        self.rx_hist.append(rx_bps)
-        self.tx_hist.append(tx_bps)
         return {"rx_bps": rx_bps, "tx_bps": tx_bps}
 
     def sample(self) -> dict:
@@ -236,10 +232,6 @@ class SystemSampler:
             "net": self._net(),
             "load": [round(load1, 2), round(load5, 2), round(load15, 2)],
             "uptime_s": int(time.time() - psutil.boot_time()),
-            "history": {
-                "cpu": list(self.cpu_hist),
-                "gpu": list(self.gpu_hist),
-                "rx": list(self.rx_hist),
-                "tx": list(self.tx_hist),
-            },
+            # only what the page draws (a CPU and a GPU trace); net rates are current values above
+            "history": {"cpu": list(self.cpu_hist), "gpu": list(self.gpu_hist)},
         }

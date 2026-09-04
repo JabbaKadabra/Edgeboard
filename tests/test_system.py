@@ -63,3 +63,11 @@ def test_sampler_survives_gpu_reader_crash():
         raise RuntimeError("no gpu")
 
     assert SystemSampler(gpu_reader=boom).sample()["gpu"] is None
+
+
+def test_history_carries_only_what_the_page_draws():
+    # The page draws a CPU and a GPU trace; net rates are in the one-line summary
+    # only, so their history would be 240 floats per snapshot for nothing.
+    sampler = SystemSampler(gpu_reader=lambda: GpuState(name="fake", percent=5.0))
+    sampler.sample()
+    assert set(sampler.sample()["history"]) == {"cpu", "gpu"}
