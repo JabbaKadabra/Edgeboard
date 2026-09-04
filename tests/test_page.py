@@ -7,6 +7,7 @@ The screenshot lands in ``tests/artifacts/`` (git-ignored) for eyeballing.
 
 from __future__ import annotations
 
+import os
 import shutil
 import socket
 import threading
@@ -57,7 +58,7 @@ def browser():
         try:
             b = p.chromium.launch()
         except playwright.Error:
-            system = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
+            system = os.environ.get("EDGEBOARD_BROWSER") or shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
             if not system:
                 pytest.skip("no Chromium: run `playwright install chromium`")
             b = p.chromium.launch(executable_path=system)
@@ -120,3 +121,41 @@ def test_demo_page_fits_the_panel(demo_url, browser):
     assert page.locator("#limits .limit-pace.warn").count() == 1
     assert page.locator("#disconnected").is_hidden()
     assert console_errors == []
+
+
+def test_demo_cards_offer_answers_and_presets(demo_url, browser):
+    page = browser.new_page(viewport={"width": WIDTH, "height": HEIGHT})
+    errors: list[str] = []
+    page.on("pageerror", lambda exc: errors.append(str(exc)))
+    page.goto(demo_url)
+    page.wait_for_function("document.querySelectorAll('#sessions .card').length === 4", timeout=10_000)
+    asking = page.locator("#sessions .card.attention").first
+    # the demo question has two parts, so the card shows the first one and defers the answering to the overlay
+    assert asking.locator(".card-detail").text_content().startswith("Which environment")
+    buttons = asking.locator(".card-actions button")
+    assert [b.strip() for b in buttons.all_text_contents()] == ["answer…", "terminal"]
+    # an idle session offers the presets from the snapshot settings
+    idle = page.locator("#sessions .card.idle").first
+    assert idle.locator(".card-actions button").count() >= 3
+    assert "continue" in idle.locator(".card-actions button").first.text_content()
+    # "answer…" opens the overlay with every question; pick one option each and send
+    buttons.first.click()
+    assert page.locator("#overlay").is_visible()
+    assert page.locator("#ov-questions .ov-q").count() == 2
+    for q in page.locator("#ov-questions .ov-q").all():
+        q.locator("button").first.click()
+    page.locator('#ov-questions button[data-act="answer-all"]').click()
+    page.wait_for_function("document.querySelectorAll('#sessions .card.attention').length === 0", timeout=5_000)
+    assert page.locator("#ov-questions").is_hidden()  # answered: the question block goes away, the overlay stays
+    page.mouse.click(5, 5)  # backdrop closes it
+    assert page.locator("#overlay").is_hidden()
+    # a preset tap on the idle card sends without opening the overlay
+    idle.locator(".card-actions button").first.click()
+    page.wait_for_function("document.querySelectorAll('#sessions .card.idle').length === 0", timeout=5_000)
+    assert page.locator("#overlay").is_hidden()
+    # the overlay of a live session has the full preset list and a free-text input
+    page.locator("#sessions .card .card-title").first.click()
+    assert page.locator("#overlay").is_visible()
+    assert page.locator("#ov-presets button").count() >= 3
+    assert page.locator("#ov-input").is_visible()
+    assert errors == []

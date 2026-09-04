@@ -279,9 +279,49 @@
       <div class="card-title"></div>
       <div class="card-proj"><b></b><span class="card-branch"></span></div>
       <div class="card-detail"></div>
+      <div class="card-actions" hidden></div>
       <div class="card-foot"><span class="tag model" hidden></span><span class="tag card-ctx"></span><span class="tag card-msgs"></span><span class="tag card-agents" hidden></span></div>`;
   const cardNodes = new Map();
-  function updateCard(el, s, now, alert) {
+  // Action row of a card (and the preset row of the overlay). Rebuilt only when
+  // its key changes so a tap never lands on a freshly re-created button.
+  //   attention + question: the options of a single-choice question (or one "answer…"
+  //   button that opens the overlay for multi-choice / several questions) + "terminal"
+  //   idle + can_send: the first ``limit`` presets
+  function actionButtons(s, presets, limit) {
+    const buttons = [];
+    if (s.status === "attention" && s.question) {
+      const qs = s.question.questions || [];
+      if (qs.length === 1 && !qs[0].multi && qs[0].options.length) {
+        qs[0].options.forEach((label) => buttons.push({ text: label, act: "answer", q: qs[0].question, label }));
+      } else {
+        buttons.push({ text: "answer…", act: "open" });
+      }
+      buttons.push({ text: "terminal", act: "pass", cls: "terminal" });
+    } else if (s.status === "idle" && s.can_send) {
+      presets.slice(0, limit).forEach((p) => buttons.push({ text: p.label, act: "send", value: p.text }));
+    }
+    return buttons;
+  }
+  function updateActions(box, s, presets, limit) {
+    const buttons = actionButtons(s, presets, limit);
+    const key = JSON.stringify(buttons);
+    if (box.dataset.key !== key) {
+      box.dataset.key = key;
+      box.innerHTML = "";
+      buttons.forEach((b) => {
+        const btn = document.createElement("button");
+        btn.textContent = b.text;
+        btn.className = "act" + (b.cls ? " " + b.cls : "");
+        btn.dataset.act = b.act;
+        if (b.q != null) btn.dataset.q = b.q;
+        if (b.label != null) btn.dataset.label = b.label;
+        if (b.value != null) btn.dataset.value = b.value;
+        box.appendChild(btn);
+      });
+    }
+    box.hidden = buttons.length === 0;
+  }
+  function updateCard(el, s, now, alert, presets) {
     const cls = "card " + s.status + (alert ? " alert" : "");
     if (el.className !== cls) el.className = cls;
     setText(el.querySelector(".pill"), s.status);
@@ -289,7 +329,10 @@
     setText(el.querySelector(".card-title"), s.name);
     setText(el.querySelector(".card-proj b"), s.project);
     setText(el.querySelector(".card-branch"), s.branch ? "@" + s.branch : "");
-    setText(el.querySelector(".card-detail"), s.detail);
+    // a pending question replaces the detail line with what Claude is asking
+    const q = s.question && s.question.questions && s.question.questions[0];
+    setText(el.querySelector(".card-detail"), q ? q.question : s.detail);
+    updateActions(el.querySelector(".card-actions"), s, presets, 4);
     const model = el.querySelector(".tag.model");
     setText(model, s.model || "");
     model.hidden = !s.model;
@@ -313,10 +356,11 @@
     if (before == null || before === status) return false;
     return status === "attention" || (status === "idle" && before === "working");
   }
-  let lastSessions = [];
+  let lastSessions = [], lastPresets = [];
   function renderSessions(sessions, summary, now, settings) {
     const box = $("sessions");
     lastSessions = sessions;
+    lastPresets = Array.isArray(settings.presets) ? settings.presets : [];
     let fresh = 0;
     sessions.forEach((s) => {
       if (needsYou(prevStatus.get(s.id), s.status)) { alerted.set(s.id, s.status); fresh++; }
@@ -341,7 +385,7 @@
         el.innerHTML = CARD_HTML;
         cardNodes.set(s.id, el);
       }
-      updateCard(el, s, now, alerted.has(s.id));
+      updateCard(el, s, now, alerted.has(s.id), lastPresets);
       const want = prev ? prev.nextElementSibling : box.firstElementChild;
       if (want !== el) box.insertBefore(el, want);  // only moves nodes that are out of order
       prev = el;
@@ -391,14 +435,143 @@
     text("ov-msgs", s.messages || 0);
     text("ov-ctx", fmtTokens(s.context_tokens) + " tokens");
     text("ov-agents", agentsLabel(s) || "none");
+    text("ov-mode", s.permission_mode || "–");
+    text("ov-waiting", s.waiting_since ? `${fmtAgo(s.waiting_since, now)} · since ${fmtTime(s.waiting_since)}` : "–");
     text("ov-prompt", s.last_prompt || "–");
+    text("ov-reply", s.last_reply || "–");
+    renderQuestions(s);
+    const actions = $("ov-actions");
+    actions.hidden = !s.can_send;
+    if (s.can_send) updateActions($("ov-presets"), { status: "idle", can_send: true }, lastPresets, 99);
     $("overlay").hidden = false;
   }
+  // The full question set: every question with its options as toggles (multi-choice
+  // allowed), sent together. Rebuilt when the question changes, so selections survive snapshots.
+  function renderQuestions(s) {
+    const box = $("ov-questions");
+    const q = s.status === "attention" ? s.question : null;
+    const key = q ? q.tool_use_id : "";
+    box.hidden = !q;
+    if (box.dataset.key === key) return;
+    box.dataset.key = key;
+    box.innerHTML = "";
+    if (!q) return;
+    (q.questions || []).forEach((item, i) => {
+      const wrap = document.createElement("div");
+      wrap.className = "ov-q";
+      wrap.dataset.index = i;
+      wrap.dataset.multi = item.multi ? "1" : "";
+      wrap.innerHTML = `<div class="ov-q-text">${item.header ? `<b>${escapeHtml(item.header)}</b>` : ""}${escapeHtml(item.question)}</div><div class="ov-q-options"></div>`;
+      const opts = wrap.querySelector(".ov-q-options");
+      item.options.forEach((label) => {
+        const btn = document.createElement("button");
+        btn.className = "act";
+        btn.textContent = label;
+        btn.dataset.act = "toggle";
+        btn.dataset.label = label;
+        opts.appendChild(btn);
+      });
+      box.appendChild(wrap);
+    });
+    const submit = document.createElement("div");
+    submit.className = "ov-q-submit";
+    submit.innerHTML = `<button class="act" data-act="answer-all">send answers</button><button class="act terminal" data-act="pass">answer in the terminal</button>`;
+    box.appendChild(submit);
+  }
+  // Answers from the overlay: the selected labels per question (comma-joined for
+  // multi-choice); the typed text fills every question without a selection.
+  function collectAnswers(s) {
+    const answers = {};
+    const typed = $("ov-input").value.trim();
+    for (const wrap of $("ov-questions").querySelectorAll(".ov-q")) {
+      const item = s.question.questions[Number(wrap.dataset.index)];
+      const picked = [...wrap.querySelectorAll("button.sel")].map((b) => b.dataset.label);
+      if (picked.length) answers[item.question] = picked.join(", ");
+      else if (typed) answers[item.question] = typed;
+      else return null;
+    }
+    return answers;
+  }
+
+  // Everything a button on a card or in the overlay can do. Buttons stay busy
+  // until the server answers, then show "sent" briefly; failures go to the red line.
+  let localError = null, localErrorUntil = 0;
+  function showError(message) {
+    localError = message; localErrorUntil = Date.now() + 8000;
+    renderErrors({});
+  }
+  async function postSession(id, action, body) {
+    const r = await fetch(`/api/sessions/${encodeURIComponent(id)}/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!r.ok) {
+      let detail = `HTTP ${r.status}`;
+      try { const data = await r.json(); if (data.detail) detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail); } catch (e) { /* keep the status */ }
+      throw new Error(detail);
+    }
+    return r.json();
+  }
+  async function runAction(btn, s) {
+    const act = btn.dataset.act;
+    if (act === "open") { openOverlay(s.id); return; }
+    if (act === "toggle") {
+      const wrap = btn.closest(".ov-q");
+      if (!wrap.dataset.multi) wrap.querySelectorAll("button.sel").forEach((b) => { if (b !== btn) b.classList.remove("sel"); });
+      btn.classList.toggle("sel");
+      return;
+    }
+    let action, body;
+    if (act === "answer") { action = "answer"; body = { tool_use_id: s.question.tool_use_id, answers: { [btn.dataset.q]: btn.dataset.label } }; }
+    else if (act === "answer-all") {
+      const answers = collectAnswers(s);
+      if (!answers) { showError("pick an option (or type an answer) for every question"); return; }
+      action = "answer"; body = { tool_use_id: s.question.tool_use_id, answers };
+    }
+    else if (act === "pass") { action = "answer"; body = { tool_use_id: s.question.tool_use_id, pass: true }; }
+    else if (act === "send") { action = "send"; body = { text: btn.dataset.value }; }
+    else if (act === "compose") {
+      const typed = $("ov-input").value.trim();
+      if (!typed) return;
+      if (s.status === "attention" && s.question) { action = "answer"; body = { tool_use_id: s.question.tool_use_id, answers: collectAnswers(s) }; }
+      else { action = "send"; body = { text: typed }; }
+    }
+    else return;
+    btn.classList.add("busy");
+    try {
+      await postSession(s.id, action, body);
+      btn.classList.remove("busy"); btn.classList.add("sent");
+      if (act === "compose") $("ov-input").value = "";
+      setTimeout(() => btn.classList.remove("sent"), 3000);
+    } catch (e) {
+      btn.classList.remove("busy");
+      showError(`${s.name || s.id}: ${e.message}`);
+    }
+  }
+  function sessionOf(el) {
+    const id = el.closest("[data-id]") ? el.closest("[data-id]").dataset.id : overlayId;
+    return lastSessions.find((x) => x.id === id);
+  }
   $("sessions").addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button");
+    if (btn) {  // an action button: never open the overlay for it
+      ev.stopPropagation();
+      const s = sessionOf(btn);
+      if (s) runAction(btn, s);
+      return;
+    }
     const card = ev.target.closest(".card");
     if (card) openOverlay(card.dataset.id);
   });
-  $("overlay").addEventListener("click", (ev) => { if (ev.target === ev.currentTarget) closeOverlay(); });
+  $("overlay").addEventListener("click", (ev) => {
+    if (ev.target === ev.currentTarget) { closeOverlay(); return; }
+    // any tap inside keeps the overlay open for another 20 s
+    clearTimeout(overlayTimer);
+    overlayTimer = setTimeout(closeOverlay, OVERLAY_MS);
+    const btn = ev.target.closest("button");
+    const s = lastSessions.find((x) => x.id === overlayId);
+    if (!btn || !s) return;
+    if (btn.id === "ov-send") { btn.dataset.act = "compose"; }
+    runAction(btn, s);
+  });
+  $("ov-input").addEventListener("keydown", (ev) => { if (ev.key === "Enter") $("ov-send").click(); });
   function escapeHtml(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
@@ -599,6 +772,7 @@
 
   // ---------- render root ----------
   function renderErrors(errors) {
+    if (localError && Date.now() < localErrorUntil) errors = { ...errors, panel: localError };
     const msgs = Object.entries(errors).filter(([, v]) => v).map(([k, v]) => `${k}: ${String(v).slice(0, 90)}`);
     const el = $("err-line");
     el.hidden = msgs.length === 0;

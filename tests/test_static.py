@@ -151,3 +151,25 @@ def test_attention_alerts_flash_card_pose_mascot_and_chime():
     # the chime is opt-in via the snapshot's settings.alert_sound (EDGEBOARD_ALERT_SOUND)
     assert "alert_sound" in sessions_js and 'chime("alert")' in sessions_js
     assert "alert:" in js.split("const CHIMES")[1].split("};")[0]
+
+
+def test_session_cards_answer_questions_and_send_presets():
+    html = (STATIC / "index.html").read_text()
+    js = (STATIC / "app.js").read_text()
+    css = (STATIC / "style.css").read_text()
+    sessions_js = js.split("// ---------- sessions ----------")[1].split("// ---------- spotify ----------")[0]
+    # the card grows an action row: option buttons for a pending AskUserQuestion, presets for an idle session
+    assert "card-actions" in sessions_js and "question" in sessions_js and "can_send" in sessions_js and "presets" in sessions_js
+    # buttons post to the session routes and must not open the overlay
+    assert "/api/sessions/" in sessions_js and "stopPropagation" in sessions_js
+    assert '"answer"' in sessions_js and '"send"' in sessions_js and '"pass"' in sessions_js or "pass: true" in sessions_js
+    # the overlay carries the full question set, the presets, a free-text input and what Claude last said
+    for element in ('id="ov-questions"', 'id="ov-presets"', 'id="ov-input"', 'id="ov-send"', 'id="ov-reply"', 'id="ov-mode"', 'id="ov-waiting"'):
+        assert element in html, element
+    assert "last_reply" in sessions_js and "permission_mode" in sessions_js and "waiting_since" in sessions_js
+    # finger-sized buttons that never overflow the card
+    assert re.search(r"^\.card-actions\s*\{[^}]*overflow:\s*hidden", css, re.M)
+    m = re.search(r"^\.card-actions button\s*\{[^}]*min-height:\s*(\d+)px", css, re.M)
+    assert m and int(m.group(1)) >= 44
+    # the 20 s overlay timer restarts on a tap inside it
+    assert "20 * 1000" in sessions_js

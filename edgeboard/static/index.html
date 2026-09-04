@@ -96,18 +96,38 @@
   <div id="overlay-card" class="overlay-card">
     <div class="ov-top"><span id="ov-pill" class="pill"></span><span id="ov-detail" class="ov-detail"></span><span id="ov-ago" class="muted"></span></div>
     <div id="ov-title" class="ov-title"></div>
-    <dl class="ov-grid">
-      <dt>cwd</dt><dd id="ov-cwd"></dd>
-      <dt>branch</dt><dd id="ov-branch"></dd>
-      <dt>model</dt><dd id="ov-model"></dd>
-      <dt>started</dt><dd id="ov-started"></dd>
-      <dt>last activity</dt><dd id="ov-activity"></dd>
-      <dt>messages</dt><dd id="ov-msgs"></dd>
-      <dt>context</dt><dd id="ov-ctx"></dd>
-      <dt>agents</dt><dd id="ov-agents"></dd>
-    </dl>
-    <div class="ov-prompt-head">last prompt</div>
-    <div id="ov-prompt" class="ov-prompt"></div>
+    <div class="ov-body">
+      <div class="ov-left">
+        <dl class="ov-grid">
+          <dt>cwd</dt><dd id="ov-cwd"></dd>
+          <dt>branch</dt><dd id="ov-branch"></dd>
+          <dt>model</dt><dd id="ov-model"></dd>
+          <dt>started</dt><dd id="ov-started"></dd>
+          <dt>last activity</dt><dd id="ov-activity"></dd>
+          <dt>messages</dt><dd id="ov-msgs"></dd>
+          <dt>context</dt><dd id="ov-ctx"></dd>
+          <dt>agents</dt><dd id="ov-agents"></dd>
+          <dt>mode</dt><dd id="ov-mode"></dd>
+          <dt>waiting</dt><dd id="ov-waiting"></dd>
+        </dl>
+      </div>
+      <div class="ov-right">
+        <div class="ov-prompt-head">last prompt</div>
+        <div id="ov-prompt" class="ov-prompt"></div>
+        <div class="ov-prompt-head">last reply</div>
+        <div id="ov-reply" class="ov-reply"></div>
+        <!-- a pending AskUserQuestion: every question with its options; answered through POST /api/sessions/{id}/answer -->
+        <div id="ov-questions" class="ov-questions" hidden></div>
+        <!-- follow-ups for a live session (settings.presets) and a free-text line; both go to POST /api/sessions/{id}/send -->
+        <div id="ov-actions" class="ov-actions" hidden>
+          <div id="ov-presets" class="ov-presets"></div>
+          <div class="ov-compose">
+            <input id="ov-input" type="text" autocomplete="off" placeholder="type a message or an answer…">
+            <button id="ov-send" class="act">send</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 <script src="/static/app.js"></script>
