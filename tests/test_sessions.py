@@ -366,3 +366,125 @@ def test_attention_transitions_only_when_a_session_starts_needing_you():
     assert [x["id"] for x in attention_transitions({"s3": "idle"}, [s(3, "attention")])] == ["s3"]
     # a stopped session that comes back to idle from done does not
     assert attention_transitions({"s5": "done"}, [s(5, "idle")]) == []
+
+
+# ---------- questions, replies and what the pid file knows ----------
+
+
+_ASK = {
+    "title": "Deploy",
+    "questions": [
+        {"question": "Deploy where?", "header": "Target", "options": [{"label": "staging", "description": "safe"}, {"label": "prod", "description": "live"}], "multiSelect": False},
+        {"question": "Notify?", "options": [{"label": "slack"}, {"label": "mail"}], "multiSelect": True},
+        "not a question",
+    ],
+}
+
+
+def test_question_from_hook_flattens_the_tool_input():
+    from edgeboard.collectors.claude_sessions import question_from_hook
+
+    hook = _hook("PreToolUse", 1000.0, tool_name="AskUserQuestion", tool_use_id="toolu_9", tool_input=_ASK)
+    assert question_from_hook(hook) == {
+        "tool_use_id": "toolu_9",
+        "title": "Deploy",
+        "questions": [
+            {"question": "Deploy where?", "header": "Target", "options": ["staging", "prod"], "multi": False},
+            {"question": "Notify?", "header": "", "options": ["slack", "mail"], "multi": True},
+        ],
+    }
+
+
+def test_question_from_hook_is_none_unless_a_pending_ask():
+    from edgeboard.collectors.claude_sessions import question_from_hook
+
+    ask = dict(_hook("PreToolUse", 1000.0, tool_name="AskUserQuestion", tool_use_id="toolu_9", tool_input=_ASK))
+    assert question_from_hook(_hook("PreToolUse", 1000.0, tool_name="Bash", tool_input={"command": "ls"})) is None
+    assert question_from_hook(_hook("Stop", 1000.0)) is None
+    assert question_from_hook({**ask, "tool_use_id": None}) is None
+    assert question_from_hook({**ask, "tool_input": {"questions": "nope"}}) is None
+    assert question_from_hook({**ask, "question_state": "answered"}) is None
+    assert question_from_hook({**ask, "question_state": "abandoned"}) is None
+
+
+def test_hook_override_follows_the_question_state():
+    from edgeboard.collectors.claude_sessions import ATTENTION, hook_override
+
+    ask = _hook("PreToolUse", 1000.0, tool_name="AskUserQuestion", tool_use_id="toolu_9", tool_input=_ASK)
+    assert hook_override(ask) == (ATTENTION, "asking you a question")
+    assert hook_override({**ask, "question_state": "answered"}) == (WORKING, "thinking")
+    assert hook_override({**ask, "question_state": "abandoned"}) == (ATTENTION, "answer in the terminal")
+
+
+def test_hook_applies_shares_the_freshness_rule():
+    from edgeboard.collectors.claude_sessions import HOOK_TTL, hook_applies
+
+    hook = _hook("Stop", 1000.0)
+    facts = SessionFacts(last_ts=datetime.fromtimestamp(990.0, tz=timezone.utc))
+    assert hook_applies(facts, hook, now=1001.0, alive=True)
+    assert not hook_applies(facts, hook, now=1000.0 + HOOK_TTL + 1, alive=True)
+    assert not hook_applies(facts, hook, now=1001.0, alive=False)
+    assert not hook_applies(SessionFacts(last_ts=datetime.fromtimestamp(1005.0, tz=timezone.utc)), hook, now=1010.0, alive=True)
+    assert not hook_applies(facts, None, now=1001.0, alive=True)
+    assert not hook_applies(facts, {"hook_event_name": "Stop", "ts": "soon"}, now=1001.0, alive=True)
+
+
+def _live_dir(tmp_path: Path, **pid_extra) -> Settings:
+    tmp_path.mkdir(exist_ok=True)
+    settings = _write_claude_dir(tmp_path)
+    info = {"pid": 4242, "sessionId": SESSION, "cwd": "/home/me/proj", "startedAt": 1788420828212, **pid_extra}
+    (tmp_path / "sessions" / "4242.json").write_text(json.dumps(info))
+    return settings
+
+
+def test_session_carries_question_reply_mode_and_name(tmp_path):
+    from edgeboard.collectors.claude_sessions import ATTENTION
+
+    sock = tmp_path / "4242.sock"
+    sock.touch()
+    settings = _live_dir(tmp_path, name="proj-3", messagingSocketPath=str(sock))
+    now = datetime.now(timezone.utc)
+    hooks = {SESSION: _hook("PreToolUse", now.timestamp(), tool_name="AskUserQuestion", tool_use_id="toolu_9", tool_input=_ASK)}
+    live = collect_sessions(settings, now, pid_alive=lambda pid: pid == 4242, hooks=hooks)[0][0]
+    assert (live.status, live.session_name, live.can_send) == (ATTENTION, "proj-3", True)
+    assert live.question["tool_use_id"] == "toolu_9" and len(live.question["questions"]) == 2
+    assert live.waiting_since == datetime.fromtimestamp(hooks[SESSION]["ts"], tz=timezone.utc).isoformat()
+    assert live.last_reply == "hi"  # from the transcript fixture
+    assert live.permission_mode == ""
+    d = live.to_dict()
+    assert {"question", "last_reply", "permission_mode", "session_name", "can_send", "waiting_since"} <= set(d)
+
+
+def test_stop_hook_reply_wins_while_it_applies(tmp_path):
+    settings = _live_dir(tmp_path)
+    now = datetime.now(timezone.utc)
+    hooks = {SESSION: _hook("Stop", now.timestamp(), last_assistant_message="All done.\n\nTests pass.")}
+    live = collect_sessions(settings, now, pid_alive=lambda pid: pid == 4242, hooks=hooks)[0][0]
+    assert (live.status, live.last_reply) == (IDLE, "All done. Tests pass.")
+    assert live.waiting_since == datetime.fromtimestamp(hooks[SESSION]["ts"], tz=timezone.utc).isoformat()
+    assert live.question is None
+
+
+def test_can_send_needs_a_live_process_and_an_existing_socket(tmp_path):
+    settings = _live_dir(tmp_path, messagingSocketPath=str(tmp_path / "missing.sock"))
+    sessions, _ = collect_sessions(settings, pid_alive=lambda pid: pid == 4242)
+    by_id = {s.id: s for s in sessions}
+    assert by_id[SESSION].can_send is False  # socket path does not exist
+    assert all(not s.can_send for s in sessions if s.id != SESSION)  # finished sessions have no inbox
+    sock = tmp_path / "4242.sock"
+    sock.touch()
+    settings = _live_dir(tmp_path / "with-socket", messagingSocketPath=str(sock))
+    assert collect_sessions(settings, pid_alive=lambda pid: pid == 4242)[0][0].can_send is True
+    assert all(not s.can_send for s in collect_sessions(settings, pid_alive=lambda pid: False)[0])
+
+
+def test_waiting_since_is_only_set_while_idle_or_attention(tmp_path):
+    settings = _live_dir(tmp_path)
+    working = collect_sessions(settings, pid_alive=lambda pid: pid == 4242)[0][0]
+    assert working.status == WORKING and working.waiting_since is None
+    settings = _live_dir(tmp_path / "idle")  # a fresh dir: transcripts are parsed incrementally, not rewritten
+    projects = tmp_path / "idle" / "projects" / "-home-me-proj"
+    (projects / f"{SESSION}.jsonl").write_text("\n".join([user_line("Live one", permissionMode="acceptEdits"), assistant_line("m1")]))
+    idle = collect_sessions(settings, pid_alive=lambda pid: pid == 4242)[0][0]
+    assert idle.status == IDLE and idle.waiting_since == idle.last_activity
+    assert idle.permission_mode == "acceptEdits"

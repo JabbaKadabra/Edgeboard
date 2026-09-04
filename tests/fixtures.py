@@ -41,9 +41,10 @@ def assistant_line(
     cache_read: int = 1000,
     cache_write: int = 200,
     tool: tuple[str, dict] | None = None,
+    text: str | None = "hi",
     **extra,
 ) -> str:
-    content = [{"type": "text", "text": "hi"}]
+    content = [{"type": "text", "text": text}] if text is not None else []
     if tool is not None:
         content.append({"type": "tool_use", "id": "toolu_1", "name": tool[0], "input": tool[1]})
     entry = {

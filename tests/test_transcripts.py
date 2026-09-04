@@ -160,3 +160,38 @@ def test_last_prompt_keeps_the_most_recent_user_prompt():
 def test_last_prompt_is_truncated_to_300_characters():
     facts = session_facts(iter_entries(user_line("y" * 400)))
     assert len(facts.last_prompt) == 300 and facts.last_prompt.endswith("…")
+
+
+def test_last_reply_is_the_most_recent_assistant_text():
+    text = "\n".join(
+        [
+            user_line("q1"),
+            assistant_line("msg_1", text="First <system-reminder>x</system-reminder>  answer\nline two"),
+            user_line("q2"),
+            assistant_line("msg_2", text="Done, all green."),
+            # streaming writes one content block per line: a tool_use-only line must not clear the reply
+            assistant_line("msg_2", stop_reason="tool_use", text=None, tool=("Bash", {"command": "ls"})),
+        ]
+    )
+    facts = session_facts(iter_entries(text))
+    assert facts.last_reply == "Done, all green."
+    facts = session_facts(iter_entries("\n".join([user_line("q"), assistant_line("m", text="First <system-reminder>x</system-reminder>  answer\nline two")])))
+    assert facts.last_reply == "First answer line two"
+
+
+def test_last_reply_is_truncated_to_300_characters():
+    facts = session_facts(iter_entries("\n".join([user_line("q"), assistant_line("m", text="y" * 400)])))
+    assert len(facts.last_reply) == 300 and facts.last_reply.endswith("…")
+
+
+def test_permission_mode_comes_from_the_latest_user_prompt():
+    text = "\n".join(
+        [
+            user_line("plan it", permissionMode="plan"),
+            assistant_line("m1", stop_reason="tool_use", tool=("Bash", {"command": "ls"})),
+            user_line("", tool_result=True),  # tool results carry no permissionMode
+            assistant_line("m2"),
+        ]
+    )
+    assert session_facts(iter_entries(text)).permission_mode == "plan"
+    assert session_facts(iter_entries(user_line("hi"))).permission_mode == ""

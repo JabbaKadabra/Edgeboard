@@ -54,6 +54,8 @@ class SessionFacts:
     last_tool: str = ""  # name of the last tool_use block in the last assistant message
     last_tool_hint: str = ""  # short description of its input, see ``tool_hint``
     last_prompt: str = ""  # most recent user prompt, cleaned, up to PROMPT_MAX chars
+    last_reply: str = ""  # most recent assistant text block, cleaned, up to PROMPT_MAX chars
+    permission_mode: str = ""  # ``permissionMode`` of the latest user prompt (plan, default, acceptEdits, ...)
 
 
 def parse_ts(value: str | None) -> datetime | None:
@@ -294,6 +296,8 @@ class SessionParser:
                     facts.last_kind = _user_kind(entry)
                     facts.last_stop_reason = ""
                     if facts.last_kind == "user_prompt":
+                        if isinstance(entry.get("permissionMode"), str) and entry["permissionMode"]:
+                            facts.permission_mode = entry["permissionMode"]
                         prompt = _prompt_text(entry)
                         if not self._first_prompt:
                             self._first_prompt = clean_prompt(prompt)
@@ -306,6 +310,12 @@ class SessionParser:
                         if block.get("type") == "tool_use" and isinstance(block.get("name"), str):
                             facts.last_tool = block["name"]
                             facts.last_tool_hint = tool_hint(block["name"], block.get("input"))
+                        # Streaming writes one content block per line, so only a
+                        # non-empty text block replaces the reply.
+                        elif block.get("type") == "text" and isinstance(block.get("text"), str):
+                            reply = clean_text(block["text"], PROMPT_MAX)
+                            if reply:
+                                facts.last_reply = reply
                     if isinstance(message.get("model"), str) and message["model"]:
                         facts.model = message["model"]
                     usage = message.get("usage")
