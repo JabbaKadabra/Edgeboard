@@ -778,7 +778,15 @@
     el.hidden = msgs.length === 0;
     setText(el, msgs.join("  ·  "));
   }
+  // The server's build id (version + hash of the page files). A change means a
+  // deploy happened under a page that may run for weeks: reload rather than
+  // render new snapshots with old code.
+  let build = null;
   function render(snap) {
+    if (snap.version) {
+      if (build !== null && snap.version !== build) { location.reload(); return; }
+      build = snap.version;
+    }
     const now = Date.now();
     const errors = snap.errors || {};
     try { renderErrors(errors); } catch (e) { console.error("errors", e); }

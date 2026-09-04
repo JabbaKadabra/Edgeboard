@@ -549,3 +549,32 @@ def test_request_allowed_is_pure():
     assert not request_allowed("127.0.0.1", "https://evil.example", allowed)
     assert not request_allowed("evil.example", None, allowed)
     assert not request_allowed("127.0.0.1", "not a url", allowed)
+
+
+# ---------- build id / page reload ----------
+
+
+def test_build_id_changes_with_the_static_files(tmp_path):
+    from edgeboard import __version__
+    from edgeboard.server import STATIC_DIR, build_id
+
+    build = build_id()
+    assert build.startswith(__version__ + "+") and len(build) > len(__version__) + 1
+    assert build == build_id(STATIC_DIR)  # deterministic
+    copy = tmp_path / "static"
+    copy.mkdir()
+    for name in ("app.js", "style.css", "index.html"):
+        copy.joinpath(name).write_bytes((STATIC_DIR / name).read_bytes())
+    assert build_id(copy) == build
+    with copy.joinpath("app.js").open("a") as fh:
+        fh.write("\n// changed\n")
+    assert build_id(copy) != build
+
+
+def test_snapshot_carries_the_build_and_the_page_links_assets_by_it():
+    client, _ = make_client()
+    build = client.get("/api/state").json()["version"]
+    assert "+" in build
+    html = client.get("/").text
+    assert "__BUILD__" not in html
+    assert f'src="/static/app.js?v={build}"' in html and f'href="/static/style.css?v={build}"' in html

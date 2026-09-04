@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import shutil
@@ -16,10 +17,11 @@ from urllib.parse import urlsplit
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
+from edgeboard import __version__
 from edgeboard.answers import Answers
 from edgeboard.collectors import claude_usage, spotify, spotify_queue
 from edgeboard.collectors.claude_inbox import find_inbox, send_message
@@ -31,6 +33,16 @@ from edgeboard.state import State
 
 log = logging.getLogger("edgeboard")
 STATIC_DIR = Path(__file__).parent / "static"
+# The page's own files, hashed into the build id so the kiosk reloads after a deploy.
+PAGE_FILES = ("index.html", "app.js", "style.css")
+
+
+def build_id(static_dir: Path = STATIC_DIR) -> str:
+    """``<version>+<hash>`` of the page files; the snapshot carries it and the page reloads when it changes."""
+    digest = hashlib.sha1()
+    for name in PAGE_FILES:
+        digest.update((static_dir / name).read_bytes())
+    return f"{__version__}+{digest.hexdigest()[:8]}"
 
 
 class SeekBody(BaseModel):
@@ -366,11 +378,15 @@ def create_app(
     app.state.dashboard = state
     app.state.answers = answers
     state.settings = {"alert_sound": settings.alert_sound, "presets": [{"label": label, "text": text} for label, text in settings.presets]}
+    state.build = build_id()
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    # The asset links carry the build id (``?v=``) so a reload after a deploy
+    # cannot come back from the browser cache; the kiosk may run for weeks.
+    index_html = (STATIC_DIR / "index.html").read_text(encoding="utf-8").replace("__BUILD__", state.build)
 
     @app.get("/")
     async def index():
-        return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-store"})
+        return HTMLResponse(index_html, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/state")
     async def api_state():
