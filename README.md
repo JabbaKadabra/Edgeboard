@@ -3,6 +3,12 @@
 A full-screen dashboard for a Corsair Xeneon Edge (2560×720 touch panel) on
 EndeavourOS / Arch Linux. One Python process, one browser tab, no build step.
 
+![edgeboard on the Xeneon Edge: Claude limits, three session cards, activity and system traces, today's commits and Spotify](docs/screenshot.png)
+
+Left to right: the clock and system figures, Claude's limits, one card per
+Claude Code session, the 24-hour burn curve, the CPU/GPU trace and today's
+commits, then Spotify with its queue.
+
 It shows, live:
 
 - **Claude usage** – 5-hour and weekly limits with % used and time until
