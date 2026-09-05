@@ -312,3 +312,7 @@ unset it when you are done.
 ```sh
 EDGEBOARD_KIOSK_CDP=http://127.0.0.1:9222 .venv/bin/pytest -m kiosk
 ```
+
+## License
+
+Edgeboard is free software, released under the [GNU General Public License v3.0 or later](LICENSE).
