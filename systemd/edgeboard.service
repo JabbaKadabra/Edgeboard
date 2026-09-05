@@ -6,11 +6,11 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-WorkingDirectory=%h/Dashboard
-ExecStart=%h/Dashboard/.venv/bin/python -m edgeboard
-# Settings live in ~/Dashboard/.env (see .env.example); Environment= lines
+WorkingDirectory=%h/Edgeboard
+ExecStart=%h/Edgeboard/.venv/bin/python -m edgeboard
+# Settings live in ~/Edgeboard/.env (see .env.example); Environment= lines
 # below override it.
-EnvironmentFile=-%h/Dashboard/.env
+EnvironmentFile=-%h/Edgeboard/.env
 # Environment=EDGEBOARD_PORT=8765
 # Restart after a clean exit too (a stray pkill, say) so the kiosk never sits on
 # "disconnected"; stop it on purpose with: systemctl --user stop edgeboard

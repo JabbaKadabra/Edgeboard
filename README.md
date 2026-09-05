@@ -33,8 +33,8 @@ Design notes live in `docs/superpowers/specs/`.
 
 ```sh
 sudo pacman -S --needed python uv playerctl chromium curl
-git clone <this repo> ~/Dashboard
-cd ~/Dashboard
+git clone <this repo> ~/Edgeboard
+cd ~/Edgeboard
 uv venv && uv pip install -e .
 ```
 
@@ -98,7 +98,7 @@ the new build id in the snapshot and reloads itself.
 ## Configuration
 
 All settings are environment variables with defaults. Put them in
-`~/Dashboard/.env` (copy `.env.example`; the server reads it from its working
+`~/Edgeboard/.env` (copy `.env.example`; the server reads it from its working
 directory or `EDGEBOARD_ENV_FILE`, and both systemd units load it via
 `EnvironmentFile`). Real environment variables override the file. There are
 no secrets to configure: the usage panel reads Claude Code's own OAuth token
@@ -172,12 +172,12 @@ you changed the port):
 ```json
 {
   "hooks": {
-    "Notification":     [{"hooks": [{"type": "command", "command": "python3 $HOME/Dashboard/scripts/edgeboard-hook.py"}]}],
-    "PreToolUse":       [{"hooks": [{"type": "command", "command": "python3 $HOME/Dashboard/scripts/edgeboard-hook.py", "timeout": 120}]}],
-    "PostToolUse":      [{"hooks": [{"type": "command", "command": "python3 $HOME/Dashboard/scripts/edgeboard-hook.py"}]}],
-    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python3 $HOME/Dashboard/scripts/edgeboard-hook.py"}]}],
-    "Stop":             [{"hooks": [{"type": "command", "command": "python3 $HOME/Dashboard/scripts/edgeboard-hook.py"}]}],
-    "SessionStart":     [{"hooks": [{"type": "command", "command": "python3 $HOME/Dashboard/scripts/edgeboard-hook.py"}]}]
+    "Notification":     [{"hooks": [{"type": "command", "command": "python3 $HOME/Edgeboard/scripts/edgeboard-hook.py"}]}],
+    "PreToolUse":       [{"hooks": [{"type": "command", "command": "python3 $HOME/Edgeboard/scripts/edgeboard-hook.py", "timeout": 120}]}],
+    "PostToolUse":      [{"hooks": [{"type": "command", "command": "python3 $HOME/Edgeboard/scripts/edgeboard-hook.py"}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python3 $HOME/Edgeboard/scripts/edgeboard-hook.py"}]}],
+    "Stop":             [{"hooks": [{"type": "command", "command": "python3 $HOME/Edgeboard/scripts/edgeboard-hook.py"}]}],
+    "SessionStart":     [{"hooks": [{"type": "command", "command": "python3 $HOME/Edgeboard/scripts/edgeboard-hook.py"}]}]
   }
 }
 ```

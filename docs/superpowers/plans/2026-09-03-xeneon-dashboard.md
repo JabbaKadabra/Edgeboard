@@ -116,5 +116,5 @@
 **Files:**
 - Create: `scripts/kiosk.sh`, `systemd/edgeboard.service`, `systemd/edgeboard-kiosk.service`, `README.md` (replace stub)
 
-- [ ] Kiosk script with `EDGEBOARD_DISPLAY_OFFSET`, `EDGEBOARD_URL`; systemd units using `%h/Dashboard/.venv/bin/python -m edgeboard`; README install steps for Arch.
+- [ ] Kiosk script with `EDGEBOARD_DISPLAY_OFFSET`, `EDGEBOARD_URL`; systemd units using `%h/Edgeboard/.venv/bin/python -m edgeboard`; README install steps for Arch.
 - [ ] Commit `docs: deployment and README`.

@@ -63,4 +63,4 @@ Data flow: collectors poll sources on their own asyncio loops → write dicts in
 
 ## Deployment
 
-`systemd/edgeboard.service` runs the server from `%h/Dashboard/.venv`; `systemd/edgeboard-kiosk.service` runs `scripts/kiosk.sh`, which waits for `/api/state` then launches Chromium with `--kiosk --class=edgeboard`. Paths assume the repo is checked out at `~/Dashboard`. The server has no auth; keep `EDGEBOARD_HOST` on loopback (the origin guard admits loopback and the configured host only). After a deploy, restart `edgeboard.service`; the kiosk page reloads itself when the build id changes.
+`systemd/edgeboard.service` runs the server from `%h/Edgeboard/.venv`; `systemd/edgeboard-kiosk.service` runs `scripts/kiosk.sh`, which waits for `/api/state` then launches Chromium with `--kiosk --class=edgeboard`. Paths assume the repo is checked out at `~/Edgeboard`. The server has no auth; keep `EDGEBOARD_HOST` on loopback (the origin guard admits loopback and the configured host only). After a deploy, restart `edgeboard.service`; the kiosk page reloads itself when the build id changes.
