@@ -137,7 +137,9 @@ another machine, put it behind a reverse proxy that adds auth. Requests to
 sends one) is loopback or the configured `EDGEBOARD_HOST`, so a web page open
 in your desktop browser cannot drive the API or read the snapshot; a reverse
 proxy therefore has to forward the original `Host` header (or bind the
-server to the address the proxy uses).
+server to the address the proxy uses). That check only stops browsers: any
+other client can set `Host` itself, so a non-loopback `EDGEBOARD_HOST` without
+a proxy in front leaves the API open to everyone on the network.
 
 ## Attention alerts
 

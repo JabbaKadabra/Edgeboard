@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`edgeboard`: a single-process FastAPI dashboard for a Corsair Xeneon Edge (2560×720 touch panel) on Arch Linux. It shows Claude usage limits, live Claude Code sessions, Spotify (via MPRIS/playerctl), system metrics and today's git commits. The layout follows the "Edgeboard Improved" screen of the Claude Design project `c80fbec1-f0a3-429c-9508-072c50f0455b` (readable through the DesignSync tool after `/design-login`). Vanilla JS frontend, no build step. The approved design spec is `docs/superpowers/specs/2026-09-03-xeneon-dashboard-design.md`; keep behaviour changes consistent with it (or update it).
+`edgeboard`: a single-process FastAPI dashboard for a Corsair Xeneon Edge (2560×720 touch panel) on Arch Linux. It shows Claude usage limits, live Claude Code sessions, Spotify (via MPRIS/playerctl), system metrics and today's git commits. The layout follows the "Edgeboard Improved" screen of the owner's Claude Design project (readable through the DesignSync tool after `/design-login`). Vanilla JS frontend, no build step. The approved design spec is `docs/superpowers/specs/2026-09-03-xeneon-dashboard-design.md`; keep behaviour changes consistent with it (or update it).
 
 ## Commands
 

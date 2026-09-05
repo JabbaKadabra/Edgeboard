@@ -109,7 +109,7 @@ def main() -> int:
         print("token exchange failed:", exc.code, exc.read().decode(errors="replace"), file=sys.stderr)
         return 1
     if not tok.get("refresh_token"):
-        print("no refresh token in response:", tok, file=sys.stderr)
+        print("no refresh token in response; keys:", sorted(tok), file=sys.stderr)
         return 1
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
