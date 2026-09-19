@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import httpx
 
 from edgeboard.collectors import opencode
+from edgeboard.collectors.claude_transcripts import HISTORY_MAX
 from edgeboard.collectors.opencode import (
     Pending,
     PendingStore,
@@ -129,6 +130,27 @@ def test_pending_store_expires_and_forgets():
     assert store.get("per_2") is None
 
 
+def test_session_history_keeps_the_conversation_in_order():
+    messages = [
+        _assistant(text="newest answer"),
+        {"type": "user", "text": "newest prompt"},
+        _assistant(text="older answer"),
+        _assistant(tool=("shell", {"command": "ls"}, "completed")),  # a tool-only step carries no text
+        {"type": "user", "text": "older prompt"},
+        {"type": "idle"},
+    ]
+    assert opencode._session_history(messages) == [
+        {"role": "user", "text": "older prompt"},
+        {"role": "assistant", "text": "older answer"},
+        {"role": "user", "text": "newest prompt"},
+        {"role": "assistant", "text": "newest answer"},
+    ]
+    # the API lists messages newest first; only the newest HISTORY_MAX survive, oldest first
+    long = [{"type": "user", "text": f"p{i}"} for i in range(20)]
+    history = opencode._session_history(long)
+    assert len(history) == HISTORY_MAX and history[0]["text"] == "p9" and history[-1]["text"] == "p0"
+
+
 def _fake_request(routes: dict):
     def request(method: str, path: str, body: dict | None = None) -> dict:
         key = (method, path.split("?")[0])
@@ -159,6 +181,7 @@ def test_collect_sessions_maps_the_service(monkeypatch, tmp_path):
     assert session.status == "attention" and session.detail == "needs permission"
     assert session.name == "Fix the collector" and session.project == "proj"
     assert session.last_prompt == "Fix it" and session.can_send is True
+    assert session.history == [{"role": "user", "text": "Fix it"}]  # the assistant step was tool-only
     assert session.agents == 1  # the child session is counted on the parent card
     assert session.context_tokens == 1000 and session.context_window == 1_000_000 and session.context_pct == 0
     assert session.question["tool_use_id"] == "per_1" and session.question["answerable"] is True

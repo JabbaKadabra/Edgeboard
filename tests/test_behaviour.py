@@ -231,6 +231,28 @@ def test_the_overlay_closes_on_its_own_after_twenty_seconds(dash, context):
     assert page.errors == []
 
 
+def test_the_overlay_transcript_follows_only_while_the_reader_is_at_the_end(dash, context):
+    page = open_dash(context, dash)
+    idle = dash.first("idle")
+    idle["history"] = [{"role": "user" if i % 2 == 0 else "assistant", "text": f"message {i} " + "x" * 180} for i in range(20)]
+    card_of(page, idle).locator(".card-title").click()
+    box = page.locator("#ov-history")
+    expect(box.locator(".ov-msg")).to_have_count(20)
+    # opening lands on the newest message
+    assert box.evaluate("(el) => el.scrollTop + el.clientHeight >= el.scrollHeight - 2")
+    # scrolled back to the top, a new message must not yank the reader down
+    box.evaluate("(el) => { el.scrollTop = 0; }")
+    idle["history"] = idle["history"] + [{"role": "assistant", "text": "the newest message"}]
+    expect(box.locator(".ov-msg")).to_have_count(21)
+    assert box.evaluate("(el) => el.scrollTop") == 0
+    # back at the end, it follows again
+    box.evaluate("(el) => { el.scrollTop = el.scrollHeight; }")
+    idle["history"] = idle["history"] + [{"role": "user", "text": "newest yet"}]
+    expect(box.locator(".ov-msg")).to_have_count(22)
+    assert box.evaluate("(el) => el.scrollTop + el.clientHeight >= el.scrollHeight - 2")
+    assert page.errors == []
+
+
 def test_tapping_the_mascot_runs_one_pomodoro_loop(dash, context):
     page = open_dash(context, dash, init_script=FAKE_AUDIO, fake_clock=True)
     pomo, mascot = page.locator("#pomo"), page.locator("#mascot")

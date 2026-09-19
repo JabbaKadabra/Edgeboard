@@ -24,12 +24,12 @@ from typing import Callable
 import httpx
 
 from edgeboard.collectors.claude_sessions import ATTENTION, DONE, IDLE, WORKING, Session
-from edgeboard.collectors.claude_transcripts import clean_text, tool_hint
+from edgeboard.collectors.claude_transcripts import HISTORY_MAX, clean_text, tool_hint
 from edgeboard.collectors.sessions import empty_summary
 from edgeboard.config import Settings
 
 PROMPT_MAX = 300
-MESSAGE_SAMPLE = 8  # messages read per session, newest first
+MESSAGE_SAMPLE = 14  # messages read per session, newest first (enough for the HISTORY_MAX transcript)
 CANDIDATE_LIMIT = 8  # sessions whose detail is read each poll
 IDLE_WINDOW = 30 * 60.0  # a finished session stays "idle" (and sendable) this long
 MODEL_TTL = 10 * 60.0
@@ -183,6 +183,29 @@ def _session_messages(messages: list[dict]) -> tuple[str, str, int]:
         if kind == "assistant" and not context:
             context = _context_tokens(message)
     return prompt, reply, context
+
+
+def _session_history(messages: list[dict]) -> list[dict]:
+    """The conversation tail for the detail overlay: user/assistant texts, oldest first.
+
+    The API returns messages newest first; tool-only assistant steps carry no
+    text and are skipped, so the transcript shows the conversation, not the
+    tool churn.
+    """
+    history: list[dict] = []
+    for message in reversed(messages):
+        if not isinstance(message, dict):
+            continue
+        kind = message.get("type")
+        if kind == "user":
+            text = clean_text(str(message.get("text") or ""), PROMPT_MAX)
+        elif kind == "assistant":
+            text = _assistant_text(message)
+        else:
+            continue
+        if text:
+            history.append({"role": kind, "text": text})
+    return history[-HISTORY_MAX:]
 
 
 def classify(
@@ -433,6 +456,7 @@ def collect_sessions(settings: Settings, now: datetime, hooks: dict[str, dict]) 
         is_active = bool(running and running.get("type") == "running")
         status, detail = classify(info, is_active, permission, form, messages, now)
         prompt, reply, context = _session_messages(messages)
+        history = _session_history(messages)
         time_info = info.get("time") if isinstance(info.get("time"), dict) else {}
         created = time_info.get("created") or 0
         updated = max([time_info.get("updated") or 0, int(_message_time(messages[0]) * 1000) if messages else 0])
@@ -464,6 +488,7 @@ def collect_sessions(settings: Settings, now: datetime, hooks: dict[str, dict]) 
                 active_agents=active_kids,
                 last_prompt=prompt,
                 last_reply=reply,
+                history=history,
                 permission_mode="",
                 session_name=agents_label,
                 agent="opencode",

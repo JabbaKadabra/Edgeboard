@@ -548,8 +548,10 @@
   // after 20 s, or when the session leaves the snapshot.
   const OVERLAY_MS = 20 * 1000;
   let overlayId = null, overlayTimer = 0;
+  let historyAtEnd = true;  // the transcript follows new messages while the reader is at its end
   function openOverlay(id) {
     overlayId = id;
+    historyAtEnd = true;  // a fresh overlay starts on the newest message
     clearTimeout(overlayTimer);
     overlayTimer = setTimeout(closeOverlay, OVERLAY_MS);
     renderOverlay(lastSessions, Date.now());
@@ -566,6 +568,7 @@
     if (overlayId == null) return;
     const s = sessions.find((x) => x.id === overlayId);
     if (!s) { closeOverlay(); return; }
+    $("overlay").hidden = false;  // unhide before filling so the history can measure and scroll
     const card = $("overlay-card");
     const cls = "overlay-card " + s.status;
     if (card.className !== cls) card.className = cls;
@@ -587,13 +590,29 @@
     text("ov-agents", agentsLabel(s) || "none");
     text("ov-mode", s.permission_mode || "–");
     text("ov-waiting", s.waiting_since ? `${fmtAgo(s.waiting_since, now)} · since ${fmtTime(s.waiting_since)}` : "–");
-    text("ov-prompt", s.last_prompt || "–");
-    text("ov-reply", s.last_reply || "–");
     renderQuestions(s);
     const actions = $("ov-actions");
     actions.hidden = !s.can_send;
     if (s.can_send) updateActions($("ov-presets"), { status: "idle", can_send: true }, lastPresets, 99);
-    $("overlay").hidden = false;
+    renderHistory(s);
+    // fill the transcript first, then follow: the question block and the actions
+    // size the box, and the newest message must stay visible after they land
+    if (historyAtEnd) $("ov-history").scrollTop = $("ov-history").scrollHeight;
+  }
+  // The conversation tail: one row per message, oldest first, the newest at the
+  // bottom. Rebuilt only when the messages change, so a scroll position survives
+  // the per-second snapshots; ``historyAtEnd`` decides whether it follows along.
+  function renderHistory(s) {
+    const box = $("ov-history");
+    const items = Array.isArray(s.history) ? s.history : [];
+    const key = JSON.stringify(items);
+    if (box.dataset.key === key) return;
+    box.dataset.key = key;
+    box.innerHTML = items.map((m) => {
+      const role = m.role === "user" ? "you" : (agentLabel(s) || "agent");
+      return `<div class="ov-msg ${m.role === "user" ? "user" : "agent"}">`
+        + `<span class="ov-msg-role">${escapeHtml(role)} ❯</span><span class="ov-msg-text">${escapeHtml(m.text)}</span></div>`;
+    }).join("") || '<div class="ov-msg-empty">no messages yet</div>';
   }
   // The full question set: every question with its options as toggles (multi-choice
   // allowed), sent together. Rebuilt when the question changes, so selections survive snapshots.
@@ -725,6 +744,17 @@
     runAction(btn, s);
   });
   $("ov-input").addEventListener("keydown", (ev) => { if (ev.key === "Enter") $("ov-send").click(); });
+  // reading the transcript counts as using the overlay: a press (the start of a
+  // scroll or a tap) restarts the 20 s timer; programmatic scroll pins do not
+  $("overlay").addEventListener("pointerdown", (ev) => {
+    if (ev.target === ev.currentTarget || overlayId == null) return;  // a backdrop press closes it anyway
+    clearTimeout(overlayTimer);
+    overlayTimer = setTimeout(closeOverlay, OVERLAY_MS);
+  });
+  $("ov-history").addEventListener("scroll", () => {
+    const box = $("ov-history");
+    historyAtEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
+  });
   function escapeHtml(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }

@@ -217,3 +217,22 @@ def test_the_overlay_names_the_agent(demo_url, page):
     assert page.text_content("#ov-agent") == "codex"
     assert "gpt-6-astra" in page.text_content("#ov-model")
     assert page.errors == []
+
+
+def test_the_overlay_shows_the_conversation_history(demo_url, page):
+    page.goto(demo_url)
+    page.wait_for_function("document.querySelectorAll('#sessions .card').length === 4", timeout=10_000)
+    # the opencode card carries the demo's longest transcript: open it and read the tail
+    card = page.locator("#sessions .card", has=page.locator(".card-agent", has_text="opencode")).first
+    card.locator(".card-title").click()
+    assert page.locator("#overlay").is_visible()
+    msgs = page.locator("#ov-history .ov-msg")
+    assert msgs.count() == 4
+    # oldest first, alternating you / the agent, each row labelled with its side
+    assert [m.get_attribute("class") for m in msgs.all()] == ["ov-msg user", "ov-msg agent", "ov-msg user", "ov-msg agent"]
+    assert msgs.first.locator(".ov-msg-role").text_content().strip() == "you ❯"
+    assert msgs.nth(1).locator(".ov-msg-role").text_content().strip() == "opencode build ❯"
+    # the last row is the reply the card clamps, so the overlay shows more than just the last message
+    assert "sanity-check" in msgs.first.text_content()
+    assert "Gap analysis is drafted" in msgs.last.text_content()
+    assert page.errors == []

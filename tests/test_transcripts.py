@@ -1,4 +1,6 @@
 from edgeboard.collectors.claude_transcripts import (
+    HISTORY_MAX,
+    SessionParser,
     clean_prompt,
     iter_entries,
     session_facts,
@@ -182,6 +184,43 @@ def test_last_reply_is_the_most_recent_assistant_text():
 def test_last_reply_is_truncated_to_300_characters():
     facts = session_facts(iter_entries("\n".join([user_line("q"), assistant_line("m", text="y" * 400)])))
     assert len(facts.last_reply) == 300 and facts.last_reply.endswith("…")
+
+
+def test_session_facts_keep_the_conversation_tail():
+    text = "\n".join([user_line("one"), assistant_line("m1", text="first"), user_line("two"), assistant_line("m2", text="second")])
+    facts = session_facts(iter_entries(text))
+    assert facts.history == [
+        {"role": "user", "text": "one"},
+        {"role": "assistant", "text": "first"},
+        {"role": "user", "text": "two"},
+        {"role": "assistant", "text": "second"},
+    ]
+
+
+def test_history_keeps_the_last_streaming_text_and_is_capped():
+    # streaming rewrites the same assistant message id: its entry is replaced, not repeated
+    parser = SessionParser()
+    parser.feed(iter_entries("\n".join([user_line("q"), assistant_line("m1", text="Half"), assistant_line("m1", text="Half a reply, finished")])))
+    assert parser.facts.history == [{"role": "user", "text": "q"}, {"role": "assistant", "text": "Half a reply, finished"}]
+    parser.feed(iter_entries("\n".join(user_line(f"prompt {i}") + "\n" + assistant_line(f"m{i}") for i in range(HISTORY_MAX * 2))))
+    history = parser.facts.history
+    assert len(history) == HISTORY_MAX
+    assert history[-1]["role"] == "assistant" and history[-2]["text"] == f"prompt {HISTORY_MAX * 2 - 1}"
+
+
+def test_history_ignores_sidechains_and_tool_results():
+    text = "\n".join(
+        [
+            user_line("main prompt"),
+            user_line("side", isSidechain=True, uuid="s1"),
+            user_line("meta", isMeta=True, uuid="s2"),
+            assistant_line("m1", text="side answer", isSidechain=True),
+            assistant_line("m2", text="main answer"),
+            user_line("", tool_result=True, uuid="tr"),
+        ]
+    )
+    facts = session_facts(iter_entries(text))
+    assert facts.history == [{"role": "user", "text": "main prompt"}, {"role": "assistant", "text": "main answer"}]
 
 
 def test_permission_mode_comes_from_the_latest_user_prompt():

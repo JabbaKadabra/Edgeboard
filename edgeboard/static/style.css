@@ -277,15 +277,20 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 .ov-grid dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 #ov-cwd { color: var(--pink); }
 #ov-model { color: var(--cyan); }
-/* facts on the left; the conversation (last prompt / reply), the pending question and the actions on the right */
+/* facts on the left; the conversation history, the pending question and the actions on the right */
 .ov-body { display: grid; grid-template-columns: 2fr 3fr; gap: 0 32px; flex: 1; min-height: 0; }
 .ov-left, .ov-right { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
 .ov-right { overflow-y: auto; scrollbar-width: none; overscroll-behavior: contain; }
 .ov-right::-webkit-scrollbar { display: none; }
 .ov-prompt-head { font-size: 15px; color: var(--muted); flex: none; }
-.ov-prompt-head + .ov-prompt-head, .ov-prompt-head:not(:first-child) { border-top: 1px dashed var(--border); padding-top: 10px; }
-.ov-prompt, .ov-reply { font-size: 18px; line-height: 1.4; overflow: hidden; overflow-wrap: anywhere; flex: none; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
-.ov-prompt { color: var(--accent-2); }
+/* the conversation tail: one row per message, scrolled by the reader, while the
+   pending question and the actions stay below it (the column scrolls if they do not fit) */
+.ov-history { flex: 1 1 auto; min-height: 96px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; border-top: 1px dashed var(--border); padding-top: 10px; }
+.ov-history::-webkit-scrollbar { display: none; }
+.ov-msg { font-size: 17px; line-height: 1.35; overflow-wrap: anywhere; flex: none; }
+.ov-msg-role { color: var(--muted); margin-right: 10px; }
+.ov-msg.user .ov-msg-role, .ov-msg.user .ov-msg-text { color: var(--accent-2); }
+.ov-msg-empty { font-size: 17px; color: var(--muted); }
 /* the full question set: a header line per question, its options as toggles, then send / hand back to the terminal */
 .ov-questions { display: flex; flex-direction: column; gap: 12px; border-top: 1px dashed var(--border); padding-top: 12px; flex: none; }
 .ov-q-text { font-size: 19px; color: var(--pink); }

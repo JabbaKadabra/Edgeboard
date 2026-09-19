@@ -114,10 +114,9 @@
         </dl>
       </div>
       <div class="ov-right">
-        <div class="ov-prompt-head">last prompt</div>
-        <div id="ov-prompt" class="ov-prompt"></div>
-        <div class="ov-prompt-head">last reply</div>
-        <div id="ov-reply" class="ov-reply"></div>
+        <div class="ov-prompt-head">history</div>
+        <!-- the conversation tail from the snapshot (s.history): one row per message, oldest first -->
+        <div id="ov-history" class="ov-history"></div>
         <!-- a pending AskUserQuestion: every question with its options; answered through POST /api/sessions/{id}/answer -->
         <div id="ov-questions" class="ov-questions" hidden></div>
         <!-- follow-ups for a live session (settings.presets) and a free-text line; both go to POST /api/sessions/{id}/send -->

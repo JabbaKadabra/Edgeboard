@@ -61,6 +61,28 @@ def test_parser_tracks_prompt_reply_and_context():
     assert facts.messages == 1  # only the assistant message carries an id we count
 
 
+def test_parser_keeps_the_conversation_tail_without_repeating_deliveries():
+    parser = CodexParser()
+    parser.feed(
+        _rollout(
+            _meta(),
+            _line("event_msg", {"type": "task_started", "turn_id": "t1"}),
+            # the same prompt arrives as an event and again as a response item
+            _line("event_msg", {"type": "user_message", "message": "Fix the touch panel"}),
+            _line("response_item", {"type": "message", "id": "m1", "role": "user", "content": [{"type": "input_text", "text": "Fix the touch panel"}]}),
+            _line("response_item", {"type": "message", "id": "m2", "role": "assistant", "content": [{"type": "output_text", "text": "I'll look at the input routing."}]}),
+            # the completed item repeats the same assistant text: no second entry
+            _line("event_msg", {"type": "item_completed", "item": {"type": "AgentMessage", "id": "m2", "content": [{"type": "Text", "text": "I'll look at the input routing."}]}}),
+            _line("event_msg", {"type": "task_complete", "turn_id": "t1", "last_agent_message": "Done: the touch panel routes again."}),
+        )
+    )
+    assert parser.facts.history == [
+        {"role": "user", "text": "Fix the touch panel"},
+        {"role": "assistant", "text": "I'll look at the input routing."},
+        {"role": "assistant", "text": "Done: the touch panel routes again."},
+    ]
+
+
 def test_parser_follows_a_running_tool_and_apply_patch():
     parser = CodexParser()
     parser.feed(

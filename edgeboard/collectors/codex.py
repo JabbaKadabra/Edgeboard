@@ -19,7 +19,7 @@ import json
 import re
 import shutil
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Iterator
@@ -37,6 +37,7 @@ from edgeboard.collectors.claude_sessions import (
 )
 from edgeboard.collectors.claude_transcripts import (
     PROMPT_MAX,
+    append_history,
     clean_prompt,
     clean_text,
     iter_entries,
@@ -71,6 +72,9 @@ class CodexFacts:
     open_tool_hint: str = ""
     last_prompt: str = ""
     last_reply: str = ""
+    # The conversation tail the detail overlay draws: ``{role, text}`` oldest
+    # first, at most HISTORY_MAX entries (claude_transcripts.append_history).
+    history: list[dict] = field(default_factory=list)
     messages: int = 0
     first_ts: datetime | None = None
     last_ts: datetime | None = None
@@ -151,6 +155,7 @@ class CodexParser:
         self._seen_messages: set[str] = set()
         self._open_calls: dict[str, tuple[str, str]] = {}  # call id -> (name, hint)
         self._open_call_id = ""  # the call whose tool is still running (drives the "now" line)
+        self._history_key = ""  # dedupe key of the newest history entry (assistant message id)
 
     def feed(self, entries: Iterable[dict]) -> CodexFacts:
         facts = self.facts
@@ -222,7 +227,7 @@ class CodexParser:
             facts.open_tool = facts.open_tool_hint = ""
             reply = payload.get("last_agent_message")
             if isinstance(reply, str) and reply:
-                facts.last_reply = clean_text(reply, PROMPT_MAX)
+                self._reply(reply)
         elif event == "item_completed":
             item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
             self._completed_item(item)
@@ -237,9 +242,20 @@ class CodexParser:
         elif event == "agent_message":
             message = payload.get("message")
             if isinstance(message, str) and message:
-                reply = clean_text(message, PROMPT_MAX)
-                if reply:
-                    facts.last_reply = reply
+                self._reply(message)
+
+    def _reply(self, text: str, key: str = "") -> None:
+        """The newest assistant text, also appended to the conversation tail.
+
+        ``key`` is the assistant message id when the record carries one so the
+        same message seen again replaces its entry instead of repeating.
+        """
+        facts = self.facts
+        reply = clean_text(text, PROMPT_MAX)
+        if reply:
+            facts.last_kind = "assistant"
+            facts.last_reply = reply
+            self._history_key = append_history(facts.history, "assistant", reply, key, self._history_key)
 
     def _completed_item(self, item: dict) -> None:
         facts = self.facts
@@ -247,10 +263,7 @@ class CodexParser:
         if item_type == "UserMessage":
             self._user_prompt(_plain_content(item))
         elif item_type == "AgentMessage":
-            reply = clean_text(_plain_content(item), PROMPT_MAX)
-            if reply:
-                facts.last_kind = "assistant"
-                facts.last_reply = reply
+            self._reply(_plain_content(item))
         elif item_type == "CommandExecution":
             command = item.get("command")
             if isinstance(command, list) and command:
@@ -280,6 +293,9 @@ class CodexParser:
             return
         facts.last_kind = "user_prompt"
         facts.last_prompt = prompt
+        # the same prompt arrives through several records (user_message event,
+        # response_item, item_completed): only show it once in the transcript
+        self._history_key = append_history(facts.history, "user", prompt, "", self._history_key)
         if not self._first_prompt:
             self._first_prompt = clean_prompt(text)
             facts.title = self._first_prompt
@@ -296,10 +312,7 @@ class CodexParser:
                 message_id = str(payload.get("id") or "")
                 if message_id:
                     self._seen_messages.add(message_id)
-                reply = clean_text(text, PROMPT_MAX)
-                if reply:
-                    facts.last_kind = "assistant"
-                    facts.last_reply = reply
+                self._reply(text, message_id)
             return
         if item_type in ("custom_tool_call", "function_call"):
             name = str(payload.get("name") or "")
@@ -558,6 +571,9 @@ def collect_sessions(settings: Settings, now: datetime, hooks: dict[str, dict]) 
         last_reply = facts.last_reply
         if hook and hook_applies(facts_to_shared(facts), hook, now_epoch, alive) and hook.get("hook_event_name") == "Stop" and isinstance(hook.get("last_assistant_message"), str):
             last_reply = clean_text(hook["last_assistant_message"], PROMPT_MAX) or last_reply
+        history = list(facts.history)
+        if history and history[-1]["role"] == "assistant" and last_reply and history[-1]["text"] != last_reply:
+            history[-1] = {"role": "assistant", "text": last_reply}  # the Stop hook may carry the finished reply
         model = str(row.get("model") or "") or str((hook or {}).get("model") or "") or facts.model
         window = facts.context_window or settings.context_window
         created = row.get("created_at")
@@ -584,6 +600,7 @@ def collect_sessions(settings: Settings, now: datetime, hooks: dict[str, dict]) 
                 agents=subagents.get(thread_id, 0),
                 last_prompt=facts.last_prompt,
                 last_reply=last_reply,
+                history=history,
                 session_name=str(row.get("name") or ""),
                 agent="codex",
                 agent_detail=facts.originator,

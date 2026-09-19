@@ -108,9 +108,11 @@ def test_session_cards_show_agents_attention_and_open_an_overlay():
     # "attention" (permission prompt / question from a hook) gets its own colour and pulses
     assert re.search(r"^\.attention \.pill\s*\{", css, re.M) and re.search(r"^\.card\.attention\s*\{", css, re.M)
     # tapping a card opens a full-height overlay kept in index.html and filled from every snapshot
-    assert 'id="overlay"' in html and 'id="ov-prompt"' in html and 'id="ov-cwd"' in html
+    assert 'id="overlay"' in html and 'id="ov-history"' in html and 'id="ov-cwd"' in html
     assert '$("sessions").addEventListener("click"' in sessions_js
     assert "last_prompt" in sessions_js and "renderOverlay(" in sessions_js.split("function renderSessions")[1]
+    # the overlay carries the conversation tail the snapshot sends (s.history), not just the last reply
+    assert "renderHistory(" in sessions_js and "s.history" in sessions_js and "ov-msg" in sessions_js
     # dismissed by tapping the backdrop or after 20 s
     assert "20 * 1000" in sessions_js or "20000" in sessions_js
     assert '$("overlay").addEventListener("click"' in sessions_js
@@ -170,8 +172,8 @@ def test_session_cards_answer_questions_and_send_presets():
     # buttons post to the session routes and must not open the overlay
     assert "/api/sessions/" in sessions_js and "stopPropagation" in sessions_js
     assert '"answer"' in sessions_js and '"send"' in sessions_js and '"pass"' in sessions_js or "pass: true" in sessions_js
-    # the overlay carries the full question set, the presets, a free-text input and what Claude last said
-    for element in ('id="ov-questions"', 'id="ov-presets"', 'id="ov-input"', 'id="ov-send"', 'id="ov-reply"', 'id="ov-mode"', 'id="ov-waiting"'):
+    # the overlay carries the full question set, the presets, a free-text input and the transcript
+    for element in ('id="ov-questions"', 'id="ov-presets"', 'id="ov-input"', 'id="ov-send"', 'id="ov-history"', 'id="ov-mode"', 'id="ov-waiting"'):
         assert element in html, element
     assert "last_reply" in sessions_js and "permission_mode" in sessions_js and "waiting_since" in sessions_js
     # finger-sized buttons that never overflow the card
