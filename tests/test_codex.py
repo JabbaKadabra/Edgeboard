@@ -5,6 +5,7 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 
+from edgeboard.collectors import codex
 from edgeboard.collectors.codex import (
     DONE,
     IDLE,
@@ -181,7 +182,8 @@ def _write_codex_dir(tmp_path, entries: list[dict], mtime: float | None = None, 
     return Settings(codex_dir=tmp_path, agents=("codex",))
 
 
-def test_collect_sessions_reads_todays_rollouts(tmp_path):
+def test_collect_sessions_reads_todays_rollouts(tmp_path, monkeypatch):
+    monkeypatch.setattr(codex.shutil, "which", lambda name: f"/usr/bin/{name}")  # the panel has the codex CLI; the CI runner need not
     settings = _write_codex_dir(
         tmp_path,
         [
@@ -199,6 +201,20 @@ def test_collect_sessions_reads_todays_rollouts(tmp_path):
     assert session.project == "proj" and session.last_reply == "It routes again."
     assert session.can_send is True  # a fresh rollout tail, no process needed
     assert summary["today"] == 1 and summary["idle"] == 1
+
+
+def test_collect_sessions_without_the_codex_cli_cannot_send(tmp_path, monkeypatch):
+    monkeypatch.setattr(codex.shutil, "which", lambda name: None)  # queue_message would fail
+    settings = _write_codex_dir(
+        tmp_path,
+        [
+            _meta(),
+            _line("event_msg", {"type": "task_started", "turn_id": "t1"}),
+            _line("event_msg", {"type": "task_complete", "turn_id": "t1"}),
+        ],
+    )
+    sessions, _ = collect_sessions(settings, datetime.now(timezone.utc), {})
+    assert sessions[0].status == IDLE and sessions[0].can_send is False
 
 
 def test_collect_sessions_skips_subagents(tmp_path):
