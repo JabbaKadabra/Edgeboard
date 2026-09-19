@@ -92,13 +92,31 @@ def test_demo_page_fits_the_panel(demo_url, page):
     assert page.locator("#limits .limit-pace").count() == 2
     assert page.locator("#limits .limit-pace.warn").count() == 1
     assert page.text_content("#t-msgs") == "279"
-    # the activity row: a drawn burn curve, the system trace with its legend values, today's commits
-    assert page.get_attribute("#burn-line", "d").startswith("M ")
+    # the bottom row: CI runs in progress and failed, the system trace with its legend values, today's commits
+    assert page.text_content("#github-summary") == "1 running · 1 failed"
+    assert page.locator("#github-runs .run").count() == 2
+    assert page.locator("#github-runs .run.running").count() == 1
+    failed_row = page.locator("#github-runs .run.failed").first
+    assert "failed" in failed_row.locator(".run-when").text_content()
+    assert "Edgeboard@other_agents" in page.locator("#github-runs .run.failed").first.text_content()
     assert page.text_content("#legend-cpu") == "cpu 6%" and page.text_content("#legend-gpu") == "gpu 6%"
     assert "history 2m" in page.text_content("#sys-uptime")
     assert page.locator("#git-commits .commit:visible").count() >= 4
     assert page.text_content("#git-summary").startswith("9 commits")
     assert "CPU" in page.text_content("#sys-line") and "DISK" in page.text_content("#sys-line")
+    # tapping the CI pane expands the runs with their details, each row a link to its Actions page
+    page.locator("#github-panel").click()
+    assert page.locator("#ci-overlay").is_visible()
+    assert page.locator("#ci-runs .ci-run").count() == 2
+    assert "actions/runs/9001" in page.locator("#ci-runs .ci-run").first.get_attribute("href")
+    assert page.locator("#ci-runs .ci-run").first.locator(".ci-open").is_visible()
+    # the demo server never spawns anything: tapping the row stays on the dashboard
+    page.locator("#ci-runs .ci-run").first.click()
+    assert page.url.startswith("http://127.0.0.1")
+    assert page.locator("#ci-overlay").is_visible()
+    assert overflowing(page, WIDTH, HEIGHT) == []
+    page.locator("#ci-overlay").click(position={"x": 5, "y": 5})
+    assert page.locator("#ci-overlay").is_hidden()
     assert page.locator("#disconnected").is_hidden()
     assert page.errors == []
 

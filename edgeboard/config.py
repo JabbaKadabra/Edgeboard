@@ -9,11 +9,13 @@ else ``.env`` in the current working directory.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
 DEFAULT_ENV_FILE = Path(".env")
+_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 # Follow-ups the page offers on an idle session card. They travel to the
 # session as plain text (slash commands would not run), hence the phrasing.
@@ -47,6 +49,16 @@ def parse_agents(raw: str) -> tuple[str, ...]:
     known = ("claude", "codex", "opencode")
     names = [item.strip().lower() for item in raw.replace(":", ",").split(",")]
     return tuple(name for name in known if name in names)
+
+
+def parse_repos(raw: str) -> tuple[str, ...]:
+    """``owner/repo, owner/repo2`` -> ("owner/repo", "owner/repo2"); junk dropped, order kept."""
+    repos = []
+    for item in raw.split(","):
+        item = item.strip().strip("/")
+        if _REPO.fullmatch(item) and item not in repos:
+            repos.append(item)
+    return tuple(repos)
 
 
 def parse_env_file(path: Path) -> dict[str, str]:
@@ -113,6 +125,20 @@ class Settings:
     # besides those of the sessions on the panel (EDGEBOARD_GIT_REPOS, ``:``-separated).
     git_interval: float = 30.0
     git_repos: tuple[str, ...] = ()
+    # GitHub CI pane (collectors/github.py): the Actions runs of the sessions'
+    # repositories plus ``github_repos``. The token is gh's own unless
+    # EDGEBOARD_GITHUB_TOKEN overrides it; a failure leaves the panel after
+    # ``github_failed_hours`` or once a newer run of its branch succeeds.
+    github_token: str = ""
+    github_repos: tuple[str, ...] = ()
+    github_interval: float = 30.0
+    github_failed_hours: float = 24.0
+    # Tapping a CI run on the page opens its Actions URL through this command
+    # (EDGEBOARD_OPEN_COMMAND; empty disables the open, the row stays a link).
+    # Before spawning, ``open_monitor`` is focused via hyprctl when both are
+    # set, so the window lands on that display instead of the kiosk's panel.
+    open_command: str = "xdg-open"
+    open_monitor: str = ""
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None, env_file: Path | None = None) -> "Settings":
@@ -163,4 +189,10 @@ class Settings:
             context_warn_pct=get("CONTEXT_WARN", defaults.context_warn_pct),
             git_interval=get("GIT_INTERVAL", defaults.git_interval),
             git_repos=parse_paths(get("GIT_REPOS", "")),
+            github_token=get("GITHUB_TOKEN", defaults.github_token),
+            github_repos=parse_repos(get("GITHUB_REPOS", "")),
+            github_interval=get("GITHUB_INTERVAL", defaults.github_interval),
+            github_failed_hours=get("GITHUB_FAILED_HOURS", defaults.github_failed_hours),
+            open_command=get("OPEN_COMMAND", defaults.open_command),
+            open_monitor=get("OPEN_MONITOR", defaults.open_monitor),
         )

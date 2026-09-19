@@ -147,6 +147,40 @@ def fill_demo(state: State) -> None:
         commit("31d9e04", "dotfiles", "feat: hyprland window rules", 200, 60, 0),
     ]
     state.git = {"commits": commits, "count": 9, "added": 412, "deleted": 88}
+    # CI: one run still going, one failure a newer run has not cleared
+    state.github = {
+        "configured": True,
+        "running": 1,
+        "failed": 1,
+        "runs": [
+            {
+                "id": 9001,
+                "repo": "NordsteinSoftware/Proxytrace",
+                "name": "E2E",
+                "title": "fix: clear the open bug backlog",
+                "branch": "bugfixes",
+                "status": "in_progress",
+                "conclusion": "",
+                "url": "https://github.com/NordsteinSoftware/Proxytrace/actions/runs/9001",
+                "number": 412,
+                "started_at": (now - timedelta(minutes=3, seconds=20)).isoformat(),
+                "updated_at": (now - timedelta(seconds=20)).isoformat(),
+            },
+            {
+                "id": 9002,
+                "repo": "JabbaKadabra/Edgeboard",
+                "name": "ci",
+                "title": "add codex and opencode",
+                "branch": "other_agents",
+                "status": "completed",
+                "conclusion": "failure",
+                "url": "https://github.com/JabbaKadabra/Edgeboard/actions/runs/9002",
+                "number": 17,
+                "started_at": (now - timedelta(minutes=14)).isoformat(),
+                "updated_at": (now - timedelta(minutes=12)).isoformat(),
+            },
+        ],
+    }
     cpu_hist = [30 + 25 * abs(math.sin(i / 7)) + rnd.uniform(-5, 5) for i in range(120)]
     gpu_hist = [10 + 60 * abs(math.sin(i / 11)) for i in range(120)]
     state.system = {

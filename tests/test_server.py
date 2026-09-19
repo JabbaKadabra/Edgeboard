@@ -20,10 +20,11 @@ def make_client(**kw):
 def test_state_shape():
     client, _ = make_client()
     data = client.get("/api/state").json()
-    for key in ("now", "usage", "sessions", "sessions_summary", "spotify", "spotify_queue", "system", "git", "errors"):
+    for key in ("now", "usage", "sessions", "sessions_summary", "spotify", "spotify_queue", "system", "git", "github", "errors"):
         assert key in data
     assert data["usage"]["windows"] == []
     assert data["git"] == {"commits": [], "count": 0, "added": 0, "deleted": 0}
+    assert data["github"] == {"configured": False, "runs": [], "running": 0, "failed": 0}
     assert data["spotify_queue"] == {"configured": False, "tracks": []}
 
 
@@ -42,6 +43,84 @@ def test_spotify_control():
     assert client.post("/api/spotify/explode").status_code == 404
 
 
+def test_open_route_spawns_the_configured_browser_on_the_configured_monitor(monkeypatch):
+    from edgeboard import server
+
+    spawned = []
+    focused = []
+
+    def spawn(argv, **kw):
+        spawned.append((argv, kw))
+
+    def focus(name):
+        focused.append(name)
+
+    monkeypatch.setattr(server.shutil, "which", lambda name: "/usr/bin/" + name)
+    settings = Settings(open_command="firefox --new-window", open_monitor="DP-2")
+    state = State()
+    state.github = {"configured": True, "runs": [{"id": 1, "url": "https://github.com/o/r/actions/runs/1"}], "running": 1, "failed": 0}
+    opener = lambda url: server.open_external(url, settings, spawn=spawn, focus=focus)  # noqa: E731
+    app = create_app(settings, state, start_collectors=False, opener=opener)
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
+
+    r = client.post("/api/open", json={"url": "https://github.com/o/r/actions/runs/1"})
+    assert r.status_code == 200 and r.json()["opened"] is True
+    # the monitor is focused first, then the browser is spawned detached with the URL appended
+    assert focused == ["DP-2"]
+    argv, kw = spawned[0]
+    assert argv == ["firefox", "--new-window", "https://github.com/o/r/actions/runs/1"]
+    assert kw["start_new_session"] is True
+    # only the runs the snapshot carries may be opened, and only over http(s)
+    assert client.post("/api/open", json={"url": "https://github.com/other/repo/actions/runs/9"}).status_code == 404
+    assert client.post("/api/open", json={"url": "file:///etc/passwd"}).status_code == 422
+    assert client.post("/api/open", json={"url": "javascript:alert(1)"}).status_code == 422
+    assert len(spawned) == 1 and len(focused) == 1
+
+
+def test_focus_monitor_speaks_both_hyprland_config_styles(monkeypatch):
+    from edgeboard import server
+
+    calls = []
+    monkeypatch.setattr(server.shutil, "which", lambda name: "/usr/bin/" + name)
+    server._focus_monitor("DP-2", runner=lambda argv, **kw: calls.append(argv))
+    # the legacy parser takes the dispatcher, the Lua config the eval form (the
+    # legacy call fails there, so both are sent and failures ignored)
+    assert calls == [
+        ["hyprctl", "dispatch", "focusmonitor", "DP-2"],
+        ["hyprctl", "eval", 'return hl.dsp.focus({ monitor = "DP-2" })'],
+    ]
+    # a missing hyprctl or a suspicious monitor name never runs anything
+    monkeypatch.setattr(server.shutil, "which", lambda name: None)
+    server._focus_monitor("DP-2", runner=lambda argv, **kw: calls.append(argv))
+    monkeypatch.setattr(server.shutil, "which", lambda name: "/usr/bin/" + name)
+    server._focus_monitor('DP-2" }); os.execute("boom', runner=lambda argv, **kw: calls.append(argv))
+    assert len(calls) == 2
+
+
+def test_open_route_reports_a_missing_browser_and_never_spawns_in_demo(monkeypatch):
+    from edgeboard import server
+
+    spawned = []
+    monkeypatch.setattr(server.shutil, "which", lambda name: None)
+
+    def opener(url):
+        return server.open_external(url, Settings(open_command=""), spawn=lambda *a, **kw: spawned.append(a))
+
+    state = State()
+    state.github = {"configured": True, "runs": [{"id": 1, "url": "https://github.com/o/r/actions/runs/1"}], "running": 1, "failed": 0}
+    client = TestClient(create_app(Settings(), state, start_collectors=False, opener=opener), base_url="http://127.0.0.1:8765")
+    # an empty open_command spawns nothing and the page gets a 503 to show
+    assert client.post("/api/open", json={"url": "https://github.com/o/r/actions/runs/1"}).status_code == 503
+    assert spawned == []
+    # demo mode never touches the desktop, even with a command configured
+    demo_state = State()
+    demo = create_app(Settings(demo=True), demo_state, start_collectors=False)
+    run = demo_state.github["runs"][0]
+    r = TestClient(demo, base_url="http://127.0.0.1:8765").post("/api/open", json={"url": run["url"]})
+    assert r.status_code == 200 and r.json()["opened"] is False
+    assert spawned == []
+
+
 def test_demo_mode_serves_canned_data():
     client, _ = make_client(demo=True)
     data = client.get("/api/state").json()
@@ -53,6 +132,8 @@ def test_demo_mode_serves_canned_data():
     assert data["spotify_queue"]["configured"] and len(data["spotify_queue"]["tracks"]) == 6
     assert data["system"]["cpu"]["percent"] == 6.0
     assert data["git"]["count"] >= len(data["git"]["commits"]) > 0 and data["git"]["added"] > 0
+    assert data["github"]["configured"] and data["github"]["running"] == 1 and data["github"]["failed"] == 1
+    assert all(run["repo"] and run["name"] and run["branch"] for run in data["github"]["runs"])
     assert sum(s["commits"] for s in data["sessions"]) > 0
     r = client.post("/api/spotify/play_pause").json()
     assert r["spotify"]["status"] == "Paused"
@@ -440,6 +521,98 @@ def test_git_collector_retries_soon_while_there_is_nothing_to_read(monkeypatch):
     state = State()
     assert asyncio.run(Collectors(Settings(), state, lambda a: (0, ""))._git()) == 5.0
     assert state.git["count"] == 0
+
+
+# ---------- github ----------
+
+
+def _gh_run(id: int, repo: str, status: str = "completed", conclusion: str = "failure", branch: str = "main", minutes_ago: float = 10.0, name: str = "ci"):
+    from datetime import datetime, timedelta, timezone
+
+    from edgeboard.collectors.github import Run
+
+    stamp = (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat()
+    return Run(id=id, repo=repo, name=name, title="t", branch=branch, status=status, conclusion=conclusion, url="", number=1, started_at=stamp, updated_at=stamp)
+
+
+def test_github_collector_writes_runs_and_alerts_once_per_new_failure():
+    import asyncio
+
+    from edgeboard.collectors.github import GitHubError
+    from edgeboard.server import Collectors
+
+    class Client:
+        def __init__(self):
+            self.by_repo = {}
+
+        def runs(self, repo):
+            return list(self.by_repo.get(repo, []))
+
+    notified = []
+    state = State()
+    c = Collectors(Settings(github_repos=("me/ci",), alert_notify=True), state, lambda a: (0, ""), notifier=lambda title, body: notified.append((title, body)))
+    client = Client()
+    c._github_client = client  # a real one would need the network
+    client.by_repo["me/ci"] = [
+        _gh_run(1, "me/ci", status="in_progress", conclusion="", minutes_ago=3),
+        _gh_run(2, "me/ci", minutes_ago=12, branch="other_agents"),
+    ]
+    assert asyncio.run(c._github()) is None
+    assert state.github["configured"] is True and state.github["running"] == 1 and state.github["failed"] == 1
+    assert [r["id"] for r in state.github["runs"]] == [1, 2]
+    assert notified == []  # the poll that first sees the failures only records them
+
+    # a failure the previous poll did not show alerts once, and not again on the next poll
+    client.by_repo["me/ci"] = [*client.by_repo["me/ci"], _gh_run(3, "me/ci", minutes_ago=1, branch="dev")]
+    asyncio.run(c._github())
+    assert state.github["failed"] == 2
+    assert notified == [("CI failed", "me/ci ci on dev")]
+    asyncio.run(c._github())
+    assert notified == [("CI failed", "me/ci ci on dev")]
+
+    # a failure that leaves the list (the row cap) and comes back must not alert again
+    client.by_repo["me/ci"] = client.by_repo["me/ci"][:2]  # drops id 3
+    asyncio.run(c._github())
+    client.by_repo["me/ci"] = [*client.by_repo["me/ci"], _gh_run(3, "me/ci", minutes_ago=1, branch="dev")]
+    asyncio.run(c._github())
+    assert notified == [("CI failed", "me/ci ci on dev")]
+
+    # a repository that cannot be read raises after writing what the others gave
+    class Broken(Client):
+        def runs(self, repo):
+            raise GitHubError("HTTP 403 (rate limited, or the token cannot read this repository)")
+
+    c._github_client = Broken()
+    try:
+        asyncio.run(c._github())
+    except RuntimeError as exc:
+        assert "me/ci: HTTP 403" in str(exc)
+    else:
+        raise AssertionError("a failing repository must raise for the error line")
+
+
+def test_github_collector_without_a_token_is_not_an_error(monkeypatch):
+    import asyncio
+
+    import edgeboard.server as server
+    from edgeboard.server import Collectors
+
+    monkeypatch.setattr(server.github, "load_token", lambda explicit="": "")
+    state = State()
+    c = Collectors(Settings(github_repos=("me/ci",)), state, lambda a: (0, ""))
+    assert asyncio.run(c._github()) is None
+    assert state.github == {"configured": False, "runs": [], "running": 0, "failed": 0}
+    assert c._github_client is None
+
+
+def test_github_collector_retries_soon_without_repositories():
+    import asyncio
+
+    from edgeboard.server import Collectors
+
+    state = State()
+    assert asyncio.run(Collectors(Settings(), state, lambda a: (0, ""))._github()) == 5.0
+    assert state.github["configured"] is False
 
 
 # ---------- answering questions and sending presets ----------

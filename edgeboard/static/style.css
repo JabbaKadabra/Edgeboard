@@ -58,7 +58,7 @@ body {
 body.kiosk { cursor: none; }   /* touch panel; scripts/kiosk.sh adds ?kiosk=1 */
 body.debug { cursor: default; } /* ?debug wins over kiosk */
 
-/* Three columns: the rail, the centre (limits / cards / activity row) and Spotify. */
+/* Three columns: the rail, the centre (limits / cards / github row) and Spotify. */
 .dash {
   height: 100vh;
   display: grid;
@@ -307,14 +307,54 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 }
 .ov-compose input:focus { border-color: var(--accent); }
 
-/* ---------- centre: activity / system / git row ---------- */
+/* ---------- centre: github ci / system / git row ---------- */
 .bottom-row { flex: none; height: 168px; display: grid; grid-template-columns: 1.1fr .9fr 1fr; gap: 18px; min-width: 0; }
 .bottom-row .panel { padding: 20px 18px 12px; display: flex; flex-direction: column; min-height: 0; }   /* no overflow clip here: the head hangs over the border */
-/* 24 h burn as a smooth amber curve; tapping it reads the hour under the finger */
-.burn { flex: 1; width: 100%; min-height: 0; cursor: pointer; }
-.burn-area { fill: rgba(255, 159, 28, .16); }
-.burn-line { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
-.timeline-labels { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-top: 5px; }
+/* CI runs from the Actions API: in progress (cyan, pulsing dot) first, then
+   failures no newer run has cleared (red); the list scrolls by touch */
+.panel-github { gap: 7px; cursor: pointer; }   /* tapping the pane opens the run overlay */
+#github-summary .run-running { color: var(--cyan); }
+#github-summary .run-failed { color: var(--bad); }
+.runs { display: flex; flex-direction: column; gap: 7px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; }
+.runs::-webkit-scrollbar { display: none; }
+.run { display: flex; gap: 10px; align-items: baseline; font-size: 15px; white-space: nowrap; overflow: hidden; flex: none; }
+.run-dot { width: 8px; height: 8px; align-self: center; flex: none; background: var(--muted); }
+.run.running .run-dot { background: var(--cyan); animation: pulse 1.6s infinite; }
+.run.failed .run-dot { background: var(--bad); }
+.run-name { color: var(--text); }
+.run-repo { color: var(--pink); overflow: hidden; text-overflow: ellipsis; }
+.run-when { color: var(--muted); margin-left: auto; }
+.run.failed .run-when { color: var(--bad); }
+.github-empty { font-size: 13px; color: var(--muted); }
+/* the CI detail overlay: one finger-sized row per run, the whole row opening the
+   run's Actions page in a new tab */
+.ci-overlay-card { gap: 14px; }
+.ci-pill::before { content: "┤ "; color: var(--muted); }
+.ci-pill::after { content: " ├"; color: var(--muted); }
+.ci-hint { margin-left: auto; font-size: 15px; }
+.ci-runs { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; }
+.ci-runs::-webkit-scrollbar { display: none; }
+.ci-run {
+  display: flex; gap: 14px; align-items: center; min-height: 64px; padding: 10px 16px;
+  border: 1px solid var(--border); border-left: 3px solid var(--muted); flex: none;
+  color: var(--text); text-decoration: none;
+}
+.ci-run.running { border-left-color: var(--cyan); }
+.ci-run.failed { border-left-color: var(--bad); }
+.ci-run:active { background: var(--panel-2); }
+.ci-run .run-dot { width: 10px; height: 10px; }
+.ci-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.ci-head { display: flex; gap: 14px; align-items: baseline; font-size: 19px; white-space: nowrap; overflow: hidden; }
+.ci-name { color: var(--cyan); flex: none; }
+.ci-title { overflow: hidden; text-overflow: ellipsis; }
+.ci-sub { font-size: 15px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ci-when { font-size: 16px; color: var(--muted); white-space: nowrap; }
+.ci-run.running .ci-when { color: var(--cyan); }
+.ci-run.failed .ci-when { color: var(--bad); }
+.ci-open { font-size: 16px; color: var(--accent); white-space: nowrap; }
+.ci-open.none { color: var(--muted); }
+.ci-run.opened { border-color: var(--ok); }
+.ci-run.opened .ci-open { color: var(--ok); }
 .panel-system { gap: 8px; }
 .spark { flex: 1; width: 100%; min-height: 0; }
 .spark polyline { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }

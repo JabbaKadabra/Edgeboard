@@ -205,11 +205,11 @@ def test_limits_update_in_place():
     assert 'querySelector(".bar-fill")' in usage_js and "fill.style.width" in usage_js
 
 
-def test_three_columns_with_an_activity_system_git_row():
+def test_three_columns_with_a_github_system_git_row():
     html = (STATIC / "index.html").read_text()
     js = (STATIC / "app.js").read_text()
     css = (STATIC / "style.css").read_text()
-    # rail | centre | spotify; the centre stacks limits, one row of four cards and the activity row
+    # rail | centre | spotify; the centre stacks limits, one row of four cards and the bottom row
     cols = re.search(r"^\.dash\s*\{[^}]*grid-template-columns:\s*([^;]+);", css, re.M).group(1).split()
     assert len(cols) == 3, cols
     assert re.search(r"^\.sessions\s*\{[^}]*grid-template-columns:\s*repeat\(4,", css, re.M)
@@ -223,13 +223,18 @@ def test_three_columns_with_an_activity_system_git_row():
     limits = html.split('class="panel panel-limits"')[1].split('class="panel panel-sessions"')[0]
     assert 'id="limits"' in limits and 'id="t-msgs"' in limits and 'id="t-write"' in limits
     assert re.search(r"^\.panel-limits\s*\{[^}]*grid-template-columns:\s*1fr 1fr", css, re.M)
-    # the activity row: burn curve (tap reads the hour), cpu/gpu history with its legend values, today's commits
+    # the bottom row: CI runs (running and failed), cpu/gpu history with its legend values, today's commits
     row = html.split('class="bottom-row"')[1].split("</section>")[0]
-    assert 'id="timeline"' in row and 'id="burn-line"' in row and 'id="burn-area"' in row
+    assert 'id="github-runs"' in row and 'id="github-summary"' in row and 'id="github-empty"' in row
     assert 'id="spark-cpu"' in row and 'id="legend-cpu"' in row and 'id="legend-gpu"' in row
     assert 'id="git-commits"' in row and 'id="git-summary"' in row and 'id="git-empty"' in row
-    assert "smoothPath(" in js and "lastTimeline" in js and 'class="tb"' not in js
-    git_js = js.split("// ---------- git ----------")[1].split("// ---------- render root ----------")[0]
+    # the 24 h burn curve is gone with the Activity pane
+    assert 'id="timeline"' not in html and 'class="burn"' not in html
+    assert "smoothPath(" not in js and "lastTimeline" not in js and 'class="tb"' not in js
+    github_js = js.split("// ---------- github ----------")[1].split("// ---------- render root ----------")[0]
+    assert "run-when" in github_js and 'chime("alert")' in github_js and "runs.length" in github_js
+    assert "renderGithub(snap.github" in js
+    git_js = js.split("// ---------- git ----------")[1].split("// ---------- github ----------")[0]
     assert "c.hash" in git_js and "c.repo" in git_js and "c.message" in git_js and "fmtAgo(c.ts" in git_js
     assert "renderGit(snap.git" in js and "system_interval" in js
     # a finished card says how many commits it made; the overlay spells it out

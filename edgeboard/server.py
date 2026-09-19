@@ -6,6 +6,8 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -23,7 +25,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from edgeboard import __version__
 from edgeboard.answers import Answers
-from edgeboard.collectors import claude_usage, git, opencode, spotify, spotify_queue
+from edgeboard.collectors import claude_usage, git, github, opencode, spotify, spotify_queue
 from edgeboard.collectors.claude_inbox import find_inbox, send_message
 from edgeboard.collectors.claude_sessions import ATTENTION, WORKING, attention_transitions, prune_hooks
 from edgeboard.collectors.codex import queue_message
@@ -84,6 +86,19 @@ class SendBody(BaseModel):
         return self
 
 
+class OpenBody(BaseModel):
+    """A CI run's Actions URL to open in the desktop browser (``POST /api/open``)."""
+
+    url: str = Field(min_length=1, max_length=2000)
+
+    @model_validator(mode="after")
+    def _http_only(self) -> "OpenBody":
+        parts = urlsplit(self.url.strip())
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise ValueError("url must be http(s)")
+        return self
+
+
 ANSWER_WAIT_MAX = 30.0  # longest a single GET /api/answer long-poll may hang
 
 # Hosts a request may name (``Host`` header, ``Origin`` host) besides the
@@ -102,6 +117,7 @@ USAGE_BACKOFF_MAX = 10 * 60
 
 
 Notifier = Callable[[str, str], None]
+Opener = Callable[[str], bool]
 
 
 def _hostname(netloc: str) -> str:
@@ -135,6 +151,56 @@ def desktop_notify(title: str, body: str) -> None:
     subprocess.run(["notify-send", "-a", "edgeboard", "-u", "normal", title, body], check=False, timeout=5)
 
 
+def _open_command(settings: Settings) -> list[str]:
+    """The argv the CI rows open through (``EDGEBOARD_OPEN_COMMAND``, split like a shell word list)."""
+    return shlex.split(settings.open_command)
+
+
+def _focus_monitor(name: str, runner: Callable[..., object] = subprocess.run) -> None:
+    """Best-effort focus of a Hyprland monitor so the next window opens on it.
+
+    New windows open on the focused monitor. Hyprland with the legacy parser
+    takes ``dispatch focusmonitor``; a Lua config (0.56 here) only accepts
+    dispatchers through ``eval``. Both are tried and failures ignored: the
+    window then lands wherever the compositor puts it.
+    """
+    if not shutil.which("hyprctl") or not re.fullmatch(r"[A-Za-z0-9_.:-]+", name):
+        return
+    for argv in (
+        ["hyprctl", "dispatch", "focusmonitor", name],
+        ["hyprctl", "eval", f'return hl.dsp.focus({{ monitor = "{name}" }})'],
+    ):
+        try:
+            runner(argv, check=False, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
+def open_external(
+    url: str,
+    settings: Settings,
+    spawn: Callable[..., object] = subprocess.Popen,
+    focus: Callable[[str], None] = _focus_monitor,
+) -> bool:
+    """Open ``url`` in the desktop's own browser (not the kiosk), detached from the server.
+
+    Demo mode and an empty ``open_command`` never spawn anything. When
+    ``open_monitor`` is set, that display is focused first (best-effort).
+    """
+    argv = _open_command(settings)
+    if settings.demo or not argv:
+        return False
+    if settings.open_monitor:
+        focus(settings.open_monitor)
+    try:
+        # Not waited for: a launcher may hand the URL over and keep running, and
+        # the browser must outlive the request.
+        spawn([*argv, url], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return True
+
+
 class Collectors:
     """Background loops that keep ``State`` fresh. One task per source."""
 
@@ -156,6 +222,9 @@ class Collectors:
         self._usage_samples: dict[str, list[claude_usage.Sample]] = {}  # per window key, for the pace projection
         self._queue_client = spotify_queue.QueueClient(settings.spotify_token_file)
         self._git_commits: list[git.Commit] = []  # every commit of today, for the per-session counts
+        self._github_client: github.GitHubClient | None = None
+        self._github_failed: set[int] = set()  # failed run ids of the previous poll, for the alerts
+        self._github_seen = False  # the poll that first sees the failures only records them
 
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
@@ -168,6 +237,7 @@ class Collectors:
             asyncio.create_task(self._loop("timeline", self.settings.timeline_interval, self._timeline)),
             asyncio.create_task(self._loop("usage", self.settings.usage_interval, self._usage)),
             asyncio.create_task(self._loop("git", self.settings.git_interval, self._git)),
+            asyncio.create_task(self._loop("github", self.settings.github_interval, self._github)),
         ]
 
     async def stop(self) -> None:
@@ -277,6 +347,39 @@ class Collectors:
         self.state.git = git.summarize(self._git_commits)
         return None
 
+    async def _github(self) -> float | None:
+        """The Actions CI runs of the sessions' repositories and of ``settings.github_repos``."""
+        cwds = [*self.settings.git_repos, *(s.get("cwd") or "" for s in self.state.sessions)]
+        if not any(cwds) and not self.settings.github_repos:
+            return 5.0  # nothing to look up yet (the sessions loop has not run); try again soon
+        if self._github_client is None:
+            token = await self._run(github.load_token, self.settings.github_token)
+            if not token:
+                # Not configured is not an error (like the Spotify queue): the pane shows a hint.
+                self.state.github = {"configured": False, "runs": [], "running": 0, "failed": 0}
+                return None
+            self._github_client = github.GitHubClient(token)
+        repos = await self._run(github.discover_repos, cwds, self.settings.github_repos)
+        runs, errors = await self._run(github.collect_runs, self._github_client, repos)
+        summary = github.summarize_runs(runs, datetime.now(timezone.utc), self.settings.github_failed_hours * 3600)
+        self.state.github = {"configured": True, **summary}
+        # A failure the previous poll did not show: alert like a session needing you.
+        failed = {r["id"] for r in summary["runs"] if r["conclusion"] in github.FAILED_CONCLUSIONS}
+        new = failed - self._github_failed
+        if self._github_seen and new and self.settings.alert_notify:
+            for run in summary["runs"]:
+                if run["id"] in new:
+                    await self._run(self.notifier, "CI failed", f"{run['repo']} {run['name']} on {run['branch']}")
+        # Remember every id: a row that leaves the 8-row cap and comes back must not alert twice.
+        # A real re-run gets a new id, so it alerts again.
+        self._github_failed |= failed
+        self._github_seen = True
+        if errors:
+            if any("token rejected" in message for message in errors):
+                self._github_client = None  # re-read the token next round; gh may have been refreshed
+            raise RuntimeError("; ".join(errors))
+        return None
+
     async def _timeline(self) -> None:
         now = datetime.now(timezone.utc)
         since = now - timedelta(days=7, hours=1)
@@ -364,6 +467,7 @@ def create_app(
     state: State | None = None,
     spotify_runner: spotify.Runner | None = None,
     start_collectors: bool = True,
+    opener: Opener | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     state = state or State()
@@ -373,6 +477,7 @@ def create_app(
         start_collectors = False
     answers = Answers(state.hooks)
     collectors = Collectors(settings, state, runner, answers=answers)
+    open_url = opener or (lambda url: open_external(url, settings))
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -423,6 +528,25 @@ def create_app(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
+
+    # Tapping a CI run on the page asks the server to open its Actions URL in
+    # the desktop's own browser: the kiosk Chromium is fullscreen on the panel,
+    # so navigating it (or a new tab in it) would hide the dashboard. The URL
+    # is validated: only http(s), and it must be one of the runs the snapshot
+    # currently carries, so the route cannot be used as a general opener.
+    @app.post("/api/open")
+    async def api_open(body: OpenBody):
+        url = body.url.strip()
+        runs = state.github.get("runs") or []
+        if url not in {r.get("url") for r in runs}:
+            raise HTTPException(status_code=404, detail="no such run url")
+        if settings.demo:
+            return {"ok": True, "opened": False}  # demo mode never touches the desktop
+        loop = asyncio.get_running_loop()
+        ok = await loop.run_in_executor(None, open_url, url)
+        if not ok:
+            raise HTTPException(status_code=503, detail="could not open a browser")
+        return {"ok": True, "opened": True}
 
     # Claude Code hooks (README: "Session state from hooks") post their stdin JSON
     # here. The body is stored as-is per session with a receipt time; the sessions

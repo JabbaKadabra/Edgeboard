@@ -6,13 +6,13 @@ EndeavourOS / Arch Linux. One Python process, one browser tab, no build step.
 <img width="2481" height="562" alt="edgeboard" src="https://github.com/user-attachments/assets/5200c22d-6cdc-4735-8271-81ba4b95914b" />
 
 Left to right: the clock and system figures, Claude's limits, one card per
-Claude Code session, the 24-hour burn curve, the CPU/GPU trace and today's
+Claude Code session, the GitHub CI runs, the CPU/GPU trace and today's
 commits, then Spotify with its queue.
 
 It shows, live:
 
 - **Claude usage** – 5-hour and weekly limits with % used and time until
-  reset, today's token totals, and a 24-hour usage histogram.
+  reset, and today's token totals.
 - **Agent sessions** – a card per coding-agent session (Claude Code, Codex
   CLI and OpenCode, one at a time or all three; see
   [Agent sessions](#agent-sessions)) with title, project, branch, model and
@@ -35,6 +35,15 @@ It shows, live:
 - **Git** – today's commits across the repositories your sessions work in
   (hash, repo, subject, age, and the added / deleted line totals); each
   session's card says how many commits it made.
+- **GitHub CI** – the Actions runs of those same repositories: what is running
+  right now (with elapsed time) and what failed, meaning the newest run of
+  that workflow on that branch ended red within the last day. Fixing a branch
+  clears it at the next poll. Tap the pane for the full run list (workflow,
+  title, `repo@branch`, run number, start time, state); tap a run and it opens
+  in your own browser on the main display instead of inside the fullscreen
+  kiosk (`EDGEBOARD_OPEN_COMMAND`, `EDGEBOARD_OPEN_MONITOR`). The token is the
+  `gh` CLI's own login; a new failure chimes and notifies with the attention
+  alerts below.
 
 Design notes live in `docs/superpowers/specs/`.
 
@@ -57,7 +66,7 @@ EDGEBOARD_DEMO=1 .venv/bin/python -m edgeboard   # canned data, no Claude/Spotif
 Open the URL in any browser to check it. The mouse cursor is only hidden when
 the page is opened with `?kiosk=1` (which `scripts/kiosk.sh` does); append
 `?debug` to get it back on the kiosk. Collector errors appear in red under
-the clock; tap the 24 h burn curve to read the hour under your finger.
+the clock.
 
 ## Run on the Xeneon Edge
 
@@ -113,6 +122,7 @@ the new build id in the snapshot and reloads itself.
 | Up next  | Spotify Web API `/me/player/queue`, optional: see [Spotify queue](#spotify-queue). MPRIS does not expose the queue. |
 | System   | `psutil`, `/sys/class/hwmon`, `nvidia-smi` or `/sys/class/drm/card*/device` for AMD.                     |
 | Git      | `git log --since=<midnight> --no-merges --shortstat` in the repository of every session on the panel (its `cwd`, mapped with `git rev-parse --show-toplevel`) plus `EDGEBOARD_GIT_REPOS`, every `EDGEBOARD_GIT_INTERVAL` seconds. Merge commits are left out. |
+| GitHub CI | The GitHub Actions API (`/repos/{owner}/{repo}/actions/runs`) for the repositories behind the sessions' `cwd`s (their `origin` remote) plus `EDGEBOARD_GITHUB_REPOS`, every `EDGEBOARD_GITHUB_INTERVAL` seconds. Runs in progress show first; a failure shows while it is the newest run of its workflow and branch and no older than `EDGEBOARD_GITHUB_FAILED_HOURS`. The token is the `gh` CLI's (`~/.config/gh/hosts.yml`) unless `EDGEBOARD_GITHUB_TOKEN` is set. Tapping a run opens it in the desktop browser (`EDGEBOARD_OPEN_COMMAND`), never inside the fullscreen kiosk; `EDGEBOARD_OPEN_MONITOR` focuses a Hyprland display first so the window lands there. |
 
 ## Configuration
 
@@ -121,7 +131,8 @@ All settings are environment variables with defaults. Put them in
 directory or `EDGEBOARD_ENV_FILE`, and both systemd units load it via
 `EnvironmentFile`). Real environment variables override the file. There are
 no secrets to configure: the usage panel reads Claude Code's own OAuth token
-from `~/.claude/.credentials.json`.
+from `~/.claude/.credentials.json`, and the GitHub CI pane the `gh` CLI's
+login (`EDGEBOARD_GITHUB_TOKEN` is only for another account).
 
 | Variable                    | Default                                  |
 |-----------------------------|------------------------------------------|
@@ -150,6 +161,12 @@ from `~/.claude/.credentials.json`.
 | `EDGEBOARD_CONTEXT_WARN`        | `80` % of the window from which the gauge turns amber (red 10 points above) |
 | `EDGEBOARD_GIT_REPOS`           | extra repositories for the Git pane, `:`-separated paths (the sessions' own are always read) |
 | `EDGEBOARD_GIT_INTERVAL`        | `30` seconds                             |
+| `EDGEBOARD_GITHUB_REPOS`        | extra repositories for the GitHub CI pane, `owner/repo` pairs, `,`-separated (the sessions' remotes are always read) |
+| `EDGEBOARD_GITHUB_INTERVAL`     | `30` seconds                             |
+| `EDGEBOARD_GITHUB_FAILED_HOURS` | `24` — how long a failure stays on the panel after its run ends |
+| `EDGEBOARD_GITHUB_TOKEN`        | unset — the `gh` CLI's own login is used; set a token for another account |
+| `EDGEBOARD_OPEN_COMMAND`        | `xdg-open` — how a tapped CI run is opened outside the kiosk (empty disables the open) |
+| `EDGEBOARD_OPEN_MONITOR`        | unset — a Hyprland monitor name (e.g. `DP-2`) to focus before opening, so the browser lands there |
 | `EDGEBOARD_ENV_FILE`            | `.env` (relative to the working directory) |
 
 The server has no authentication and exposes session titles, project paths
@@ -175,6 +192,11 @@ raises its arms while any card is in that state. Two optional extras:
   browser is started with autoplay allowed, so it sounds without a tap).
 - `EDGEBOARD_ALERT_NOTIFY=1` sends a desktop notification through
   `notify-send`, so the main monitor sees it too.
+
+A CI failure uses the same two switches: a run that turns red (or a failure
+that was not on the panel before) chimes and notifies like a session. The
+first poll after a restart only records what is already red, so nothing fires
+for old failures.
 
 The Limits panel also projects the current pace: `at this pace 100% at 15:40`
 in amber when the window would fill before it resets, `safe until reset`
@@ -271,8 +293,8 @@ Claude Code is the default. Set `EDGEBOARD_AGENTS=claude,codex,opencode` (a
 `,`-separated list) to show Codex CLI and OpenCode sessions too. Cards from
 every enabled agent share the row, ranked globally (attention first, then
 working, idle, done); the badge in the figures grid says which agent each
-card belongs to. The 24-hour burn curve and the usage counters stay
-Claude-only; only the session cards and the summary counts merge.
+card belongs to. The usage limits and counters stay Claude-only; only the
+session cards and the summary counts merge.
 
 **OpenCode** needs no setup: the server discovers the local OpenCode service
 through `~/.local/state/opencode/service.json` and talks to its HTTP API.
