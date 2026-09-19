@@ -168,7 +168,7 @@ def _focus_monitor(name: str, runner: Callable[..., object] = subprocess.run) ->
         return
     for argv in (
         ["hyprctl", "dispatch", "focusmonitor", name],
-        ["hyprctl", "eval", f'return hl.dsp.focus({{ monitor = "{name}" }})'],
+        ["hyprctl", "eval", f'hl.dispatch(hl.dsp.focus({{ monitor = "{name}" }}))'],
     ):
         try:
             runner(argv, check=False, timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
