@@ -319,13 +319,13 @@ def test_sessions_collector_passes_hooks_and_prunes_expired(monkeypatch, tmp_pat
     }
     seen = {}
 
-    def fake_collect(settings, now=None, pid_alive=None, hooks=None):
+    def fake_collect(settings, now=None, hooks=None, adapters=None):
         seen["hooks"] = hooks
-        return [], {"today": 0, "done": 0, "working": 0, "idle": 0, "attention": 0}
+        return [], {"today": 0, "done": 0, "working": 0, "idle": 0, "attention": 0}, []
 
     import edgeboard.server as server
 
-    monkeypatch.setattr(server, "collect_sessions", fake_collect)
+    monkeypatch.setattr(server, "collect_agents", fake_collect)
     c = Collectors(Settings(claude_dir=tmp_path), state, lambda a: (0, ""))
     asyncio.run(c._sessions())
     assert set(seen["hooks"]) == {"fresh"} and set(state.hooks) == {"fresh"}
@@ -356,11 +356,11 @@ def test_sessions_loop_notifies_on_attention_transitions(monkeypatch):
         def to_dict(self):
             return dict(self)
 
-    def fake_collect(settings, now, pid_alive, hooks):
+    def fake_collect(settings, now, hooks, adapters=None):
         sessions, summary = rounds.pop(0)
-        return [FakeSession(s) for s in sessions], summary
+        return [FakeSession(s) for s in sessions], summary, []
 
-    monkeypatch.setattr(server, "collect_sessions", fake_collect)
+    monkeypatch.setattr(server, "collect_agents", fake_collect)
     sent = []
     collectors = Collectors(Settings(alert_notify=True), State(), spotify_runner=lambda args: (0, ""), notifier=lambda title, body: sent.append((title, body)))
 
@@ -425,7 +425,7 @@ def test_git_collector_reads_session_repositories_and_configured_ones(monkeypatc
             return dict(self)
 
     rows = [FakeSession({"id": "a", "status": "idle", "cwd": "/home/me/Dashboard/edgeboard", "started_at": "2026-09-04T09:30:00+00:00"}), FakeSession({"id": "d", "status": "done", "cwd": "/srv/blog", "started_at": None})]
-    monkeypatch.setattr(server, "collect_sessions", lambda *a, **k: (rows, {}))
+    monkeypatch.setattr(server, "collect_agents", lambda *a, **k: (rows, {}, []))
     asyncio.run(c._sessions())
     assert [s["commits"] for s in state.sessions] == [1, 1]
 
@@ -545,10 +545,78 @@ def test_sessions_collector_expires_pending_answers(monkeypatch, tmp_path):
     state.hooks = {"abc": {**_ASK_HOOK, "ts": time.time()}}
     answers = Answers(state.hooks)
     answers.open("toolu_1", "abc", now=time.time() - ABANDON_AFTER - 1)
-    monkeypatch.setattr(server, "collect_sessions", lambda *a, **k: ([], {"today": 0, "done": 0, "working": 0, "idle": 0, "attention": 0}))
+    monkeypatch.setattr(server, "collect_agents", lambda *a, **k: ([], {"today": 0, "done": 0, "working": 0, "idle": 0, "attention": 0}, []))
     c = Collectors(Settings(claude_dir=tmp_path), state, lambda a: (0, ""), answers=answers)
     asyncio.run(c._sessions())
     assert state.hooks["abc"]["question_state"] == "abandoned"
+
+
+def test_codex_permission_hook_is_answerable_from_the_panel():
+    client, _ = make_client()
+    hook = {"session_id": "thr_1", "agent": "codex", "hook_event_name": "PermissionRequest", "tool_use_id": "perm_1", "tool_name": "Bash", "tool_input": {"command": "git push"}}
+    assert client.post("/api/hook", json=hook).json() == {"ok": True}
+    assert client.get("/api/answer/perm_1?wait=0").json() == {"status": "pending"}
+    r = client.post("/api/sessions/thr_1/answer", json={"tool_use_id": "perm_1", "answers": {"Allow Bash?": "Allow"}})
+    assert r.status_code == 200
+    assert client.get("/api/answer/perm_1?wait=0").json() == {"status": "answered", "answers": {"Allow Bash?": "Allow"}}
+
+
+def test_opencode_answers_and_prompts_go_through_the_service(monkeypatch, tmp_path):
+    from edgeboard.collectors import opencode
+
+    calls = []
+
+    def fake_request(service, timeout=5.0):
+        def request(method, path, body=None):
+            calls.append((method, path, body))
+            return {"data": {}}
+
+        return request
+
+    state_file = tmp_path / "service.json"
+    state_file.write_text('{"url": "http://127.0.0.1:49374", "password": "pw"}')
+    monkeypatch.setattr(opencode, "default_request", fake_request)
+    opencode.PENDING._items.clear()
+    opencode.PENDING.remember("per_1", opencode.Pending("ses_1", "permission", "per_1", {"Allow Bash?": {"key": "", "type": "choice", "options": {"Allow once": "once", "Deny": "reject"}}}))
+    client, _ = make_client(opencode_state_file=state_file)
+
+    # answering a permission from the panel reaches the service's reply route
+    r = client.post("/api/sessions/ses_1/answer", json={"tool_use_id": "per_1", "answers": {"Allow Bash?": "Allow once"}})
+    assert r.status_code == 200 and calls[-1] == ("POST", "/api/session/ses_1/permission/per_1/reply", {"decision": "once"})
+    assert opencode.PENDING.get("per_1") is not None  # only the collector expires entries
+
+    # a prompt goes to the prompt route; a done session resumes instead of steering
+    r = client.post("/api/sessions/ses_1/send", json={"text": "carry on"})
+    assert r.status_code == 200 and calls[-1] == ("POST", "/api/session/ses_1/prompt", {"text": "carry on"})
+    client.app.state.dashboard.sessions = [{"id": "ses_9", "agent": "opencode", "status": "done"}]
+    r = client.post("/api/sessions/ses_9/send", json={"text": "again"})
+    assert r.status_code == 200 and calls[-1] == ("POST", "/api/session/ses_9/prompt", {"text": "again", "resume": True})
+
+    # an unknown question, a missing option and a missing service all fail cleanly
+    assert client.post("/api/sessions/ses_1/answer", json={"tool_use_id": "nope", "answers": {"q": "a"}}).status_code == 404
+    opencode.PENDING.remember("per_2", opencode.Pending("ses_1", "form", "frm_1", {"Deploy where?": {"key": "env", "type": "string", "options": {}}}))
+    assert client.post("/api/sessions/ses_1/answer", json={"tool_use_id": "per_2", "answers": {}}).status_code == 422
+    state_file.unlink()
+    assert client.post("/api/sessions/ses_1/send", json={"text": "x"}).status_code == 404
+    opencode.PENDING._items.clear()
+
+
+def test_codex_send_queues_a_message(monkeypatch):
+    import edgeboard.server as server
+
+    queued = []
+    monkeypatch.setattr(server, "queue_message", lambda thread_id, text: queued.append((thread_id, text)))
+    client, _ = make_client()
+    client.app.state.dashboard.sessions = [{"id": "01a0b864-e4b3-76c0-96d9-35853e476d60", "agent": "codex", "status": "idle"}]
+    r = client.post("/api/sessions/01a0b864-e4b3-76c0-96d9-35853e476d60/send", json={"text": "carry on"})
+    assert r.status_code == 200 and queued == [("01a0b864-e4b3-76c0-96d9-35853e476d60", "carry on")]
+
+    def boom(thread_id, text):
+        raise RuntimeError("codex queue failed")
+
+    monkeypatch.setattr(server, "queue_message", boom)
+    r = client.post("/api/sessions/01a0b864-e4b3-76c0-96d9-35853e476d60/send", json={"text": "x"})
+    assert r.status_code == 502 and "codex queue failed" in r.json()["detail"]
 
 
 # ---------- origin guard ----------

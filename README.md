@@ -13,16 +13,19 @@ It shows, live:
 
 - **Claude usage** – 5-hour and weekly limits with % used and time until
   reset, today's token totals, and a 24-hour usage histogram.
-- **Claude Code sessions** – a card per session with title, project, branch,
-  model and permission mode, how long it has been running, subagent and
-  commit counts, the task list's progress and the task in hand, your last
-  prompt and as much of Claude's last reply as fits, a context gauge against
-  the model's window (with the compaction count), and whether it is working
-  (and on which tool or file), idle, done, or waiting for you to approve a
-  permission or answer a question. A question's options are on the card: tap one to answer it, and
-  tap a preset ("continue", "commit", "tests", …) to send an idle session its
-  next prompt. Tap the card itself for the full title, path, timings, the
-  last prompt and reply, every question, all presets and a free-text line.
+- **Agent sessions** – a card per coding-agent session (Claude Code, Codex
+  CLI and OpenCode, one at a time or all three; see
+  [Agent sessions](#agent-sessions)) with title, project, branch, model and
+  permission mode, how long it has been running, subagent and commit counts,
+  the task list's progress and the task in hand, your last prompt and as much
+  of the agent's last reply as fits, a context gauge against the model's
+  window (with the compaction count), and whether it is working (and on which
+  tool or file), idle, done, or waiting for you to approve a permission or
+  answer a question. A question's options are on the card: tap one to answer
+  it, and tap a preset ("continue", "commit", "tests", …) to send an idle
+  session its next prompt. Tap the card itself for the full title, path,
+  timings, the last prompt and reply, every question, all presets and a
+  free-text line.
 - **Spotify** – current track with album art, a tap-to-seek progress bar, a
   volume slider, and touch controls for previous / play-pause / next (via
   MPRIS, no API keys). The "up next" list scrolls, and tapping a track skips
@@ -63,19 +66,27 @@ mkdir -p ~/.config/systemd/user
 cp systemd/*.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now edgeboard.service edgeboard-kiosk.service
+loginctl enable-linger "$USER"
 ```
 
 Edit `~/.config/systemd/user/edgeboard-kiosk.service` and set
 `EDGEBOARD_DISPLAY_OFFSET` to the X,Y position of the Xeneon Edge in your monitor
 layout (`xrandr --listmonitors` on X11). On Wayland, window placement is up
-to the compositor; add a rule for windows with class `edgeboard` (Hyprland:
-`windowrule = monitor DP-3, class:^(edgeboard)$` and `windowrule = fullscreen,
-class:^(edgeboard)$`; older Hyprland versions spell it `windowrulev2`).
+to the compositor. For Hyprland 0.55+, add this to `hyprland.lua`:
 
-The kiosk unit starts with `graphical-session.target`, but systemd user
-units do not see `DISPLAY` / `WAYLAND_DISPLAY` unless your session exports
-them. Most desktop environments do this for you; on a bare compositor add
-this to its startup (Hyprland `exec-once`, sway `exec`):
+```lua
+hl.window_rule({
+    match = { class = "edgeboard" },
+    monitor = "DP-3",
+    fullscreen = true,
+})
+```
+
+Both units start with the systemd user manager; lingering starts that manager
+at boot. The kiosk retries until a graphical session is available, but systemd
+user units still need that session to export `DISPLAY` / `WAYLAND_DISPLAY`.
+Most desktop environments do this for you; on a bare compositor add this to
+its startup (Hyprland `hyprland.start`, sway `exec`):
 
 ```sh
 systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XDG_CURRENT_DESKTOP
@@ -95,7 +106,9 @@ the new build id in the snapshot and reloads itself.
 |----------|----------------------------------------------------------------------------------------------------------|
 | Limits   | Claude's OAuth usage endpoint, using the token in `~/.claude/.credentials.json` (same as `/usage` in Claude Code). Without a token the panel falls back to token counts from local transcripts and is labelled "estimated". |
 | Today / timeline | `~/.claude/projects/*/*.jsonl` transcript files.                                                  |
-| Sessions | `~/.claude/sessions/*.json` (live processes, checked against `/proc/<pid>/cmdline`) plus transcripts modified today. A transcript without a process (`claude -p`, remote sessions) counts as working while it was written in the last 60 s and Claude is mid-turn. Subagents are the `*.jsonl` files under `<project>/<session>/subagents/`; one written in the last 60 s counts as active. Optional: [hooks](#session-state-from-hooks) for states the transcript cannot show. |
+| Claude sessions | `~/.claude/sessions/*.json` (live processes, checked against `/proc/<pid>/cmdline`) plus transcripts modified today. A transcript without a process (`claude -p`, remote sessions) counts as working while it was written in the last 60 s and Claude is mid-turn. Subagents are the `*.jsonl` files under `<project>/<session>/subagents/`; one written in the last 60 s counts as active. Optional: [hooks](#session-state-from-hooks) for states the transcript cannot show. |
+| Codex sessions | `~/.codex/sessions/**/rollout-*.jsonl` rollout files modified today, joined with `~/.codex/state_*.sqlite` (title, branch, archive state). Optional: [Codex hooks](#codex-sessions) for instant status and panel-answered permission requests. |
+| OpenCode sessions | The local OpenCode service's HTTP API (URL and password in `~/.local/state/opencode/service.json`): sessions, messages, pending permissions and forms; prompts and answers go back through the same API. Nothing to install. |
 | Spotify  | `playerctl -p spotify` (MPRIS over D-Bus). Set `EDGEBOARD_SPOTIFY_PLAYER` for another player name. Spotify's MPRIS position is only refreshed on play/pause/seek, so the progress bar is interpolated client-side and can drift by a few seconds. |
 | Up next  | Spotify Web API `/me/player/queue`, optional: see [Spotify queue](#spotify-queue). MPRIS does not expose the queue. |
 | System   | `psutil`, `/sys/class/hwmon`, `nvidia-smi` or `/sys/class/drm/card*/device` for AMD.                     |
@@ -113,7 +126,10 @@ from `~/.claude/.credentials.json`.
 | Variable                    | Default                                  |
 |-----------------------------|------------------------------------------|
 | `EDGEBOARD_HOST` / `EDGEBOARD_PORT` | `127.0.0.1` / `8765`                     |
-| `EDGEBOARD_CLAUDE_DIR`          | `~/.claude`                              |
+| `EDGEBOARD_AGENTS`            | `claude` — the agents on the panel, `,`-separated: `claude,codex,opencode` |
+| `EDGEBOARD_CLAUDE_DIR`        | `~/.claude`                              |
+| `EDGEBOARD_CODEX_DIR`         | `~/.codex`                               |
+| `EDGEBOARD_OPENCODE_STATE_FILE` | `~/.local/state/opencode/service.json` |
 | `EDGEBOARD_SPOTIFY_PLAYER`      | `spotify`                                |
 | `EDGEBOARD_SPOTIFY_TOKEN_FILE`  | `~/.config/edgeboard/spotify-token.json` |
 | `EDGEBOARD_SPOTIFY_QUEUE_INTERVAL` | `10` seconds                          |
@@ -248,6 +264,56 @@ for approval in its terminal; sessions without a process (finished,
 
 Everything the panel sends is plain text as if you had typed it; nothing
 approves a permission prompt on your behalf.
+
+## Agent sessions
+
+Claude Code is the default. Set `EDGEBOARD_AGENTS=claude,codex,opencode` (a
+`,`-separated list) to show Codex CLI and OpenCode sessions too. Cards from
+every enabled agent share the row, ranked globally (attention first, then
+working, idle, done); the badge in the figures grid says which agent each
+card belongs to. The 24-hour burn curve and the usage counters stay
+Claude-only; only the session cards and the summary counts merge.
+
+**OpenCode** needs no setup: the server discovers the local OpenCode service
+through `~/.local/state/opencode/service.json` and talks to its HTTP API.
+Sessions show working/idle/done, the last prompt and reply, the running tool,
+a context gauge from the model's own context window, and pending permission
+requests and forms, both answerable from the panel (the server replies
+through the API; the request never reaches the terminal). A tap on a preset
+sends the session a prompt; a finished session is resumed. If the service is
+not running, its sessions simply disappear from the panel.
+
+**Codex** reads today's rollout files (`~/.codex/sessions/**/rollout-*.jsonl`)
+and the state database for titles, branches and archive state; without hooks
+the status follows the turn boundaries in the rollout (a finished turn stays
+"idle" for 30 minutes, then counts as done). Prompts are queued with
+`codex queue`. Codex's own `request_user_input` questions cannot be answered
+from the panel (they would need the app-server protocol), but permission
+requests can: install the hook into `~/.codex/hooks.json` (merge with any
+hooks you already have) and Codex will POST its lifecycle events, including
+`PermissionRequest`, which the panel then answers:
+
+```json
+{
+  "hooks": {
+    "SessionStart":     [{"hooks": [{"type": "command", "command": "python3 $HOME/Edgeboard/scripts/edgeboard-hook.py --agent codex"}]}],
+    "SessionEnd":       [{"hooks": [{"type": "command", "command": "python3 $HOME/Edgeboard/scripts/edgeboard-hook.py --agent codex"}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python3 $HOME/Edgeboard/scripts/edgeboard-hook.py --agent codex"}]}],
+    "PreToolUse":       [{"hooks": [{"type": "command", "command": "python3 $HOME/Edgeboard/scripts/edgeboard-hook.py --agent codex"}]}],
+    "PostToolUse":      [{"hooks": [{"type": "command", "command": "python3 $HOME/Edgeboard/scripts/edgeboard-hook.py --agent codex"}]}],
+    "Stop":             [{"hooks": [{"type": "command", "command": "python3 $HOME/Edgeboard/scripts/edgeboard-hook.py --agent codex"}]}],
+    "Interrupt":        [{"hooks": [{"type": "command", "command": "python3 $HOME/Edgeboard/scripts/edgeboard-hook.py --agent codex"}]}],
+    "PermissionRequest":[{"hooks": [{"type": "command", "command": "python3 $HOME/Edgeboard/scripts/edgeboard-hook.py --agent codex", "timeout": 120}]}]
+  }
+}
+```
+
+Codex requires new hooks to be trusted once (`/hooks` in the CLI) before they
+run. The hook events are optional: without them the cards fall back to what
+the rollout says, and permissions stay in the terminal. The hook script is
+the same one Claude Code uses (`--agent codex` switches the answer path);
+a permission request shows on the card with **Allow** / **Deny** buttons and
+waits `EDGEBOARD_ANSWER_WAIT` seconds for a tap before the terminal asks.
 
 ## Spotify queue
 

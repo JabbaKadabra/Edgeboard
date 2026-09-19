@@ -246,6 +246,7 @@ body.debug { cursor: default; } /* ?debug wins over kiosk */
 .tag { white-space: nowrap; }
 .card-meta .tag:not([hidden]) ~ .tag:not([hidden])::before { content: "·"; margin: 0 6px; }
 .tag.model { color: var(--cyan); }
+.tag.card-agent { color: var(--accent-2); }
 .card-mode { color: var(--text); }
 .card-up, .card-msgs { color: var(--text); }
 /* context gauge: "ctx 197k ▮▮▮▮▯ 98% ⟲2" */

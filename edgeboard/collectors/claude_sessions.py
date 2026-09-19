@@ -68,6 +68,8 @@ class Session:
     last_reply: str = ""  # what Claude last said (Stop hook, else the transcript)
     permission_mode: str = ""
     session_name: str = ""  # Claude Code's own name for the session (pid file ``name``)
+    agent: str = "claude"  # which coding agent this is: claude, codex or opencode
+    agent_detail: str = ""  # that tool's own sub-agent/mode (opencode ``plan``/``build``)
     can_send: bool = False  # alive with an inbox socket: POST /api/sessions/{id}/send works
     waiting_since: str | None = None  # since when it has been idle / needing you
     question: dict | None = None  # pending AskUserQuestion, see ``question_from_hook``

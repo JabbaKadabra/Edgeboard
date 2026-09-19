@@ -346,7 +346,7 @@
       <div class="card-detail"></div>
       <div class="card-actions" hidden></div>
       <div class="card-meta">
-        <span class="cell"><span class="tag model" hidden></span><span class="tag card-mode" hidden></span></span>
+        <span class="cell"><span class="tag card-agent" hidden></span><span class="tag model" hidden></span><span class="tag card-mode" hidden></span></span>
         <span class="cell"><span class="tag card-up" hidden></span><span class="tag card-msgs"></span></span>
         <span class="cell card-ctx">ctx <b class="card-ctx-text"></b><span class="bar bar-mini"><span class="bar-fill"></span></span><b class="card-ctx-pct"></b><span class="card-compact" hidden></span></span>
         <span class="cell"><span class="tag card-agents" hidden></span><span class="tag card-commits" hidden></span></span>
@@ -420,6 +420,9 @@
     const model = el.querySelector(".tag.model");
     setText(model, s.model || "");
     model.hidden = !s.model;
+    const agent = el.querySelector(".tag.card-agent");
+    setText(agent, agentLabel(s));
+    agent.hidden = !agent.textContent;
     const mode = el.querySelector(".card-mode");
     setText(mode, modeLabel(s.permission_mode));
     mode.hidden = !mode.textContent;
@@ -427,7 +430,9 @@
     const started = s.started_at ? new Date(s.started_at).getTime() : 0;
     up.hidden = !started;
     setText(up, started ? "up " + fmtDuration((now - started) / 1000) : "");
-    setText(el.querySelector(".card-msgs"), `${s.messages} msgs`);
+    const msgs = el.querySelector(".card-msgs");
+    msgs.hidden = !s.messages;  // 0 means "unknown" (e.g. the OpenCode API has no message count)
+    setText(msgs, `${s.messages} msgs`);
     const ctx = el.querySelector(".card-ctx"), pct = s.context_pct || 0;
     setText(ctx.querySelector(".card-ctx-text"), fmtTokens(s.context_tokens));
     const fill = ctx.querySelector(".bar-fill");
@@ -465,6 +470,12 @@
     return MODES[mode] || String(mode).toLowerCase();
   }
   function commitsLabel(n) { return `${n} ${n === 1 ? "commit" : "commits"}`; }
+  // Which coding agent the card belongs to: "claude", "codex", "opencode build", …
+  function agentLabel(s) {
+    if (!s.agent) return "";
+    if (s.agent === "opencode" && s.agent_detail) return `${s.agent} ${s.agent_detail}`;
+    return s.agent;
+  }
   // "3/7 tasks · reviewing the access rules"; "5/5 tasks" once everything is done
   function tasksLabel(t) {
     return `${t.done}/${t.total} tasks` + (t.current ? ` · ${t.current}` : "");
@@ -566,6 +577,7 @@
     text("ov-branch", s.branch || "–");
     text("ov-commits", s.commits ? `${commitsLabel(s.commits)} since it started` : "none since it started");
     text("ov-model", s.model || "–");
+    text("ov-agent", agentLabel(s) || "–");
     const started = s.started_at ? new Date(s.started_at).getTime() : 0;
     text("ov-started", started ? `${fmtTime(s.started_at)} · running ${fmtDuration((now - started) / 1000)}` : "–");
     text("ov-activity", s.last_activity ? `${fmtTime(s.last_activity)} · ${fmtAgo(s.last_activity, now)} ago` : "–");

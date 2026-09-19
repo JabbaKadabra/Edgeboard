@@ -1,8 +1,7 @@
 [Unit]
 Description=edgeboard kiosk browser on the Xeneon Edge
-After=graphical-session.target edgeboard.service
+After=edgeboard.service
 Wants=edgeboard.service
-PartOf=graphical-session.target
 
 [Service]
 Type=simple
@@ -17,4 +16,4 @@ Restart=always
 RestartSec=5
 
 [Install]
-WantedBy=graphical-session.target
+WantedBy=default.target

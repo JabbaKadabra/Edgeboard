@@ -126,6 +126,13 @@ def test_server_unit_restarts_after_clean_exit():
     assert "systemctl --user stop edgeboard" in (ROOT / "README.md").read_text()
 
 
+def test_kiosk_starts_with_the_user_manager():
+    unit = (ROOT / "systemd" / "edgeboard-kiosk.service").read_text()
+    assert re.search(r"^WantedBy=default.target$", unit, re.M)
+    assert "graphical-session.target" not in unit
+    assert re.search(r"^Restart=always$", unit, re.M)
+
+
 def test_limits_show_pace_projection():
     js = (STATIC / "app.js").read_text()
     css = (STATIC / "style.css").read_text()

@@ -204,3 +204,16 @@ def test_demo_cards_offer_answers_and_presets(demo_url, page):
     assert page.locator("#ov-presets button").count() >= 3
     assert page.locator("#ov-input").is_visible()
     assert page.errors == []
+
+
+def test_the_overlay_names_the_agent(demo_url, page):
+    page.goto(demo_url)
+    page.wait_for_function("document.querySelectorAll('#sessions .card').length === 4", timeout=10_000)
+    # the codex card: its badge says codex, the overlay spells the agent out next to the model
+    codex_card = page.locator("#sessions .card", has=page.locator(".card-agent", has_text="codex")).first
+    assert codex_card.locator(".card-agent").text_content().strip() == "codex"
+    codex_card.locator(".card-title").click()
+    assert page.locator("#overlay").is_visible()
+    assert page.text_content("#ov-agent") == "codex"
+    assert "gpt-6-astra" in page.text_content("#ov-model")
+    assert page.errors == []

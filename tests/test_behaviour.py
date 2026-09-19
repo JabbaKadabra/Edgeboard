@@ -132,6 +132,21 @@ def test_a_session_turning_to_attention_alerts_but_a_first_sighting_does_not(das
     assert page.errors == []
 
 
+def test_cards_show_which_agent_a_session_belongs_to(dash, context):
+    page = open_dash(context, dash)
+    # the demo has a codex and an opencode card: each carries its agent in the figures grid
+    badges = page.locator("#sessions .card .card-agent")
+    expect(badges).to_have_count(4)
+    assert [b.strip() for b in badges.all_text_contents()] == ["claude", "claude", "codex", "opencode build"]
+    # a session without an agent (older snapshot) shows no badge at all
+    session = dash.state.sessions[0]
+    session.pop("agent")
+    expect(card_of(page, session).locator(".card-agent")).to_be_hidden()
+    session["agent"] = "claude"
+    expect(card_of(page, session).locator(".card-agent")).to_have_text("claude")
+    assert page.errors == []
+
+
 def test_cards_limits_and_commit_rows_update_in_place(dash, context):
     page = open_dash(context, dash)
     page.evaluate("""() => {

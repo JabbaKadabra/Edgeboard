@@ -48,6 +48,17 @@ def test_wants_answer_only_for_ask_user_question():
     assert not mod.wants_answer({**ASK, "tool_name": "Bash"})
     assert not mod.wants_answer({**ASK, "hook_event_name": "PostToolUse"})
     assert not mod.wants_answer({**ASK, "tool_use_id": ""})
+    permission = {"hook_event_name": "PermissionRequest", "tool_use_id": "perm_1", "tool_name": "Bash"}
+    assert mod.wants_answer(permission, "codex") and not mod.wants_answer(permission, "claude")
+
+
+def test_decision_for_codex_permission_requests():
+    mod = _load()
+    allow = mod.decision({"hook_event_name": "PermissionRequest", "tool_name": "Bash"}, {"status": "answered", "answers": {"Allow Bash?": "Allow"}}, "codex")
+    assert allow == {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}}
+    deny = mod.decision({"hook_event_name": "PermissionRequest", "tool_name": "Bash"}, {"status": "answered", "answers": {"Allow Bash?": "Deny"}}, "codex")
+    assert deny["hookSpecificOutput"]["decision"]["behavior"] == "deny" and deny["hookSpecificOutput"]["decision"]["message"]
+    assert mod.decision({"hook_event_name": "PermissionRequest"}, {"status": "pass"}, "codex") is None
 
 
 class _Dashboard(BaseHTTPRequestHandler):
@@ -93,7 +104,7 @@ def test_script_forwards_the_event_and_prints_the_answer_when_it_arrives():
     r = _run(ASK, "--wait", "10", "--poll", "0.2", url=url)
     server.shutdown()
     assert r.returncode == 0, r.stderr
-    assert _Dashboard.hooks == [ASK] and _Dashboard.polls == 2
+    assert _Dashboard.hooks == [{**ASK, "agent": "claude"}] and _Dashboard.polls == 2
     assert json.loads(r.stdout)["hookSpecificOutput"]["updatedInput"]["answers"] == {"Deploy where?": "staging"}
 
 
@@ -103,7 +114,7 @@ def test_script_stays_silent_for_other_events_and_when_the_dashboard_is_down():
     url = f"http://127.0.0.1:{server.server_port}"
     r = _run({"session_id": "abc", "hook_event_name": "Stop"}, url=url)
     server.shutdown()
-    assert (r.returncode, r.stdout) == (0, "") and _Dashboard.hooks == [{"session_id": "abc", "hook_event_name": "Stop"}] and _Dashboard.polls == 0
+    assert (r.returncode, r.stdout) == (0, "") and _Dashboard.hooks == [{"session_id": "abc", "hook_event_name": "Stop", "agent": "claude"}] and _Dashboard.polls == 0
     r = _run(ASK, "--wait", "1", url="http://127.0.0.1:1")  # nobody listens
     assert (r.returncode, r.stdout) == (0, "")
     r = subprocess.run([sys.executable, str(SCRIPT), "--url", url], input="not json", capture_output=True, text=True, timeout=20)

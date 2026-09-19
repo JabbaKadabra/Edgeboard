@@ -42,6 +42,13 @@ def parse_paths(raw: str) -> tuple[str, ...]:
     return tuple(str(Path(item.strip()).expanduser()) for item in raw.split(":") if item.strip())
 
 
+def parse_agents(raw: str) -> tuple[str, ...]:
+    """``claude,codex ,opencode`` -> ("claude", "codex", "opencode"); unknown names are dropped."""
+    known = ("claude", "codex", "opencode")
+    names = [item.strip().lower() for item in raw.replace(":", ",").split(",")]
+    return tuple(name for name in known if name in names)
+
+
 def parse_env_file(path: Path) -> dict[str, str]:
     """Return KEY=value pairs from a dotenv-style file; {} if it does not exist."""
     try:
@@ -68,6 +75,13 @@ def parse_env_file(path: Path) -> dict[str, str]:
 @dataclass(frozen=True)
 class Settings:
     claude_dir: Path = Path.home() / ".claude"
+    # Coding agents whose sessions appear on the panel (EDGEBOARD_AGENTS).
+    # Claude is the default; codex and opencode are opt-in because they read
+    # other tools' local state or query their local service.
+    agents: tuple[str, ...] = ("claude",)
+    codex_dir: Path = Path.home() / ".codex"
+    # The OpenCode background service registers its URL and bearer password here.
+    opencode_state_file: Path = Path.home() / ".local" / "state" / "opencode" / "service.json"
     host: str = "127.0.0.1"
     port: int = 8765
     spotify_player: str = "spotify"
@@ -124,6 +138,9 @@ class Settings:
         defaults = cls()
         return cls(
             claude_dir=get("CLAUDE_DIR", defaults.claude_dir),
+            agents=parse_agents(get("AGENTS", "")) or defaults.agents,
+            codex_dir=get("CODEX_DIR", defaults.codex_dir),
+            opencode_state_file=get("OPENCODE_STATE_FILE", defaults.opencode_state_file),
             host=get("HOST", defaults.host),
             port=get("PORT", defaults.port),
             spotify_player=get("SPOTIFY_PLAYER", defaults.spotify_player),

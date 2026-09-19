@@ -31,7 +31,7 @@ def fill_demo(state: State) -> None:
         "updated_at": now.isoformat(),
     }
 
-    def session(i, name, status, detail, model, ctx, minutes, project="it-system-of-record", branch="master", agents=0, active_agents=0, question=None, can_send=False, reply="", window=200_000, compactions=0, tasks=None, commits=0, prompt="", mode="default"):
+    def session(i, name, status, detail, model, ctx, minutes, project="it-system-of-record", branch="master", agents=0, active_agents=0, question=None, can_send=False, reply="", window=200_000, compactions=0, tasks=None, commits=0, prompt="", mode="default", agent="claude", agent_detail=""):
         return {
             "id": f"demo-{i}",
             "name": name,
@@ -51,6 +51,8 @@ def fill_demo(state: State) -> None:
             "last_reply": reply,
             "permission_mode": mode,
             "session_name": f"{project[:6]}-{i}",
+            "agent": agent,
+            "agent_detail": agent_detail,
             "can_send": can_send,
             "waiting_since": (now - timedelta(minutes=minutes)).isoformat() if status in ("idle", "attention") else None,
             "question": question,
@@ -83,10 +85,10 @@ def fill_demo(state: State) -> None:
                 prompt="Reorganise the UKG process repo: exports, loaders and the cron entries each in their own package, tests green after every move.",
                 reply="Moved the UKG exports into ukg/exports/ and the loaders into ukg/load/, with the old import paths kept as thin shims so the cron entries keep working until I touch them. The suite passed after each move; running it once more end to end before I rewrite the cron entries and drop the shims.",
                 tasks={"total": 5, "done": 5, "current": ""}),
-        session(3, "Hazelwood Frost findings memo", "working", "agents running", "fable-5-1[1m]", 420_000, 1, agents=3, active_agents=2, can_send=True, window=1_000_000, compactions=1,
+        session(3, "Hazelwood Frost findings memo", "working", "agents running", "gpt-6-astra", 420_000, 1, agents=3, active_agents=2, can_send=True, window=1_000_000, compactions=1, agent="codex",
                 prompt="Turn the Hazelwood Frost findings into a memo for the steering group: risks first, then the evidence, one page.",
                 reply="Three reviewers are reading the findings in parallel: one checks the figures against the audit export, one reads the interview notes for anything the figures miss, one drafts the risk section. I will merge their notes into the memo's risk section and keep the evidence to one page as asked."),
-        session(4, "ITOPS features gap analysis", "idle", "waiting for you", "opus-5[1m]", 304_000, 31, agents=1, can_send=True, window=1_000_000, commits=1,
+        session(4, "ITOPS features gap analysis", "idle", "waiting for you", "deepseek-v4.1-flash", 304_000, 31, agents=1, can_send=True, window=1_000_000, commits=1, agent="opencode", agent_detail="build",
                 prompt="Compare the ITOPS feature list with what the vendor shipped and write up the gaps, blocking ones first.",
                 reply="Gap analysis is drafted in docs/itops-gaps.md: 14 features, 5 blocking. The blocking ones are all on the ticketing side (SLA clocks, escalation rules, the on-call rota sync); the rest are reporting and can wait for the next release. Want me to open tickets for the blocking ones?",
                 tasks={"total": 4, "done": 2, "current": "Open tickets for the blocking gaps"}),
