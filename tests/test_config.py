@@ -107,3 +107,19 @@ def test_git_settings():
     assert s.git_repos == (str(Path.home() / "dotfiles"), "/srv/blog") and s.git_interval == 15.0
     d = Settings.from_env({}, env_file=NO_FILE)
     assert d.git_repos == () and d.git_interval == 30.0
+
+
+def test_github_settings():
+    s = Settings.from_env(
+        {
+            "EDGEBOARD_GITHUB_REPOS": "me/one, Owner/Repo , junk, me/one",
+            "EDGEBOARD_GITHUB_INTERVAL": "60",
+            "EDGEBOARD_GITHUB_FAILED_HOURS": "12",
+            "EDGEBOARD_GITHUB_TOKEN": "tok",
+        },
+        env_file=NO_FILE,
+    )
+    assert s.github_repos == ("me/one", "Owner/Repo")  # order kept, duplicates and junk dropped
+    assert s.github_interval == 60.0 and s.github_failed_hours == 12.0 and s.github_token == "tok"
+    d = Settings.from_env({}, env_file=NO_FILE)
+    assert d.github_repos == () and d.github_interval == 30.0 and d.github_failed_hours == 24.0 and d.github_token == ""

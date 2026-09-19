@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
@@ -66,8 +66,13 @@ class Session:
     active_agents: int = 0  # of those, written in the last HEADLESS_ACTIVE_SECS
     last_prompt: str = ""
     last_reply: str = ""  # what Claude last said (Stop hook, else the transcript)
+    # The conversation tail the detail overlay draws: ``{role, text}`` oldest
+    # first, at most HISTORY_MAX entries (claude_transcripts.append_history).
+    history: list[dict] = field(default_factory=list)
     permission_mode: str = ""
     session_name: str = ""  # Claude Code's own name for the session (pid file ``name``)
+    agent: str = "claude"  # which coding agent this is: claude, codex or opencode
+    agent_detail: str = ""  # that tool's own sub-agent/mode (opencode ``plan``/``build``)
     can_send: bool = False  # alive with an inbox socket: POST /api/sessions/{id}/send works
     waiting_since: str | None = None  # since when it has been idle / needing you
     question: dict | None = None  # pending AskUserQuestion, see ``question_from_hook``
@@ -388,6 +393,9 @@ def _build(
     last_reply = facts.last_reply
     if fresh and hook.get("hook_event_name") == "Stop" and isinstance(hook.get("last_assistant_message"), str):
         last_reply = clean_text(hook["last_assistant_message"], PROMPT_MAX) or last_reply
+    history = list(facts.history)
+    if history and history[-1]["role"] == "assistant" and last_reply and history[-1]["text"] != last_reply:
+        history[-1] = {"role": "assistant", "text": last_reply}  # the Stop hook may carry the finished reply
     waiting_since = None
     if status in (IDLE, ATTENTION):
         waiting_since = _iso(datetime.fromtimestamp(float(hook["ts"]), tz=timezone.utc)) if fresh else last_activity
@@ -416,6 +424,7 @@ def _build(
         active_agents=active_agents,
         last_prompt=facts.last_prompt,
         last_reply=last_reply,
+        history=history,
         permission_mode=facts.permission_mode,
         session_name=session_name,
         can_send=bool(alive and not headless and socket_path and os.path.exists(socket_path)),

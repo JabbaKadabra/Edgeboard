@@ -92,13 +92,31 @@ def test_demo_page_fits_the_panel(demo_url, page):
     assert page.locator("#limits .limit-pace").count() == 2
     assert page.locator("#limits .limit-pace.warn").count() == 1
     assert page.text_content("#t-msgs") == "279"
-    # the activity row: a drawn burn curve, the system trace with its legend values, today's commits
-    assert page.get_attribute("#burn-line", "d").startswith("M ")
+    # the bottom row: CI runs in progress and failed, the system trace with its legend values, today's commits
+    assert page.text_content("#github-summary") == "1 running · 1 failed"
+    assert page.locator("#github-runs .run").count() == 2
+    assert page.locator("#github-runs .run.running").count() == 1
+    failed_row = page.locator("#github-runs .run.failed").first
+    assert "failed" in failed_row.locator(".run-when").text_content()
+    assert "Edgeboard@other_agents" in page.locator("#github-runs .run.failed").first.text_content()
     assert page.text_content("#legend-cpu") == "cpu 6%" and page.text_content("#legend-gpu") == "gpu 6%"
     assert "history 2m" in page.text_content("#sys-uptime")
     assert page.locator("#git-commits .commit:visible").count() >= 4
     assert page.text_content("#git-summary").startswith("9 commits")
     assert "CPU" in page.text_content("#sys-line") and "DISK" in page.text_content("#sys-line")
+    # tapping the CI pane expands the runs with their details, each row a link to its Actions page
+    page.locator("#github-panel").click()
+    assert page.locator("#ci-overlay").is_visible()
+    assert page.locator("#ci-runs .ci-run").count() == 2
+    assert "actions/runs/9001" in page.locator("#ci-runs .ci-run").first.get_attribute("href")
+    assert page.locator("#ci-runs .ci-run").first.locator(".ci-open").is_visible()
+    # the demo server never spawns anything: tapping the row stays on the dashboard
+    page.locator("#ci-runs .ci-run").first.click()
+    assert page.url.startswith("http://127.0.0.1")
+    assert page.locator("#ci-overlay").is_visible()
+    assert overflowing(page, WIDTH, HEIGHT) == []
+    page.locator("#ci-overlay").click(position={"x": 5, "y": 5})
+    assert page.locator("#ci-overlay").is_hidden()
     assert page.locator("#disconnected").is_hidden()
     assert page.errors == []
 
@@ -203,4 +221,36 @@ def test_demo_cards_offer_answers_and_presets(demo_url, page):
     assert page.locator("#overlay").is_visible()
     assert page.locator("#ov-presets button").count() >= 3
     assert page.locator("#ov-input").is_visible()
+    assert page.errors == []
+
+
+def test_the_overlay_names_the_agent(demo_url, page):
+    page.goto(demo_url)
+    page.wait_for_function("document.querySelectorAll('#sessions .card').length === 4", timeout=10_000)
+    # the codex card: its badge says codex, the overlay spells the agent out next to the model
+    codex_card = page.locator("#sessions .card", has=page.locator(".card-agent", has_text="codex")).first
+    assert codex_card.locator(".card-agent").text_content().strip() == "codex"
+    codex_card.locator(".card-title").click()
+    assert page.locator("#overlay").is_visible()
+    assert page.text_content("#ov-agent") == "codex"
+    assert "gpt-6-astra" in page.text_content("#ov-model")
+    assert page.errors == []
+
+
+def test_the_overlay_shows_the_conversation_history(demo_url, page):
+    page.goto(demo_url)
+    page.wait_for_function("document.querySelectorAll('#sessions .card').length === 4", timeout=10_000)
+    # the opencode card carries the demo's longest transcript: open it and read the tail
+    card = page.locator("#sessions .card", has=page.locator(".card-agent", has_text="opencode")).first
+    card.locator(".card-title").click()
+    assert page.locator("#overlay").is_visible()
+    msgs = page.locator("#ov-history .ov-msg")
+    assert msgs.count() == 4
+    # oldest first, alternating you / the agent, each row labelled with its side
+    assert [m.get_attribute("class") for m in msgs.all()] == ["ov-msg user", "ov-msg agent", "ov-msg user", "ov-msg agent"]
+    assert msgs.first.locator(".ov-msg-role").text_content().strip() == "you ❯"
+    assert msgs.nth(1).locator(".ov-msg-role").text_content().strip() == "opencode build ❯"
+    # the last row is the reply the card clamps, so the overlay shows more than just the last message
+    assert "sanity-check" in msgs.first.text_content()
+    assert "Gap analysis is drafted" in msgs.last.text_content()
     assert page.errors == []

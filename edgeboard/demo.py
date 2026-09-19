@@ -31,7 +31,11 @@ def fill_demo(state: State) -> None:
         "updated_at": now.isoformat(),
     }
 
-    def session(i, name, status, detail, model, ctx, minutes, project="it-system-of-record", branch="master", agents=0, active_agents=0, question=None, can_send=False, reply="", window=200_000, compactions=0, tasks=None, commits=0, prompt="", mode="default"):
+    def session(i, name, status, detail, model, ctx, minutes, project="it-system-of-record", branch="master", agents=0, active_agents=0, question=None, can_send=False, reply="", window=200_000, compactions=0, tasks=None, commits=0, prompt="", mode="default", agent="claude", agent_detail="", history=None):
+        last_prompt = prompt or f"Review the {name.lower()} once more and list what still blocks Monday's rollout, then start on the fixes in priority order."
+        if history is None:
+            # the conversation tail the detail overlay draws; the card only needs prompt/reply
+            history = ([{"role": "user", "text": last_prompt}] if last_prompt else []) + ([{"role": "assistant", "text": reply}] if reply else [])
         return {
             "id": f"demo-{i}",
             "name": name,
@@ -47,10 +51,13 @@ def fill_demo(state: State) -> None:
             "messages": 20 + i * 7,
             "agents": agents,
             "active_agents": active_agents,
-            "last_prompt": prompt or f"Review the {name.lower()} once more and list what still blocks Monday's rollout, then start on the fixes in priority order.",
+            "last_prompt": last_prompt,
             "last_reply": reply,
+            "history": history,
             "permission_mode": mode,
             "session_name": f"{project[:6]}-{i}",
+            "agent": agent,
+            "agent_detail": agent_detail,
             "can_send": can_send,
             "waiting_since": (now - timedelta(minutes=minutes)).isoformat() if status in ("idle", "attention") else None,
             "question": question,
@@ -78,17 +85,29 @@ def fill_demo(state: State) -> None:
         session(1, "HR Dashboard Monday review", "attention", "asking you a question", "opus-5", 197_000, 0, question=question, can_send=True, mode="plan",
                 prompt="Go through the HR dashboard once more and list what still blocks Monday's rollout, then plan the fixes in priority order.",
                 reply="Two options remain for the rollout order; I need your call before I touch the deploy scripts.",
+                history=[
+                    {"role": "user", "text": "Start with the rollout blockers in the HR dashboard."},
+                    {"role": "assistant", "text": "I walked the dashboard end to end: the access rules are the only hard blocker. The chart query is slow but tolerable."},
+                    {"role": "user", "text": "Go through the HR dashboard once more and list what still blocks Monday's rollout, then plan the fixes in priority order."},
+                    {"role": "assistant", "text": "Two options remain for the rollout order; I need your call before I touch the deploy scripts."},
+                ],
                 tasks={"total": 7, "done": 3, "current": "Reviewing the HR dashboard access rules"}),
         session(2, "UKG process repo organization", "working", "running pytest tests/ -q", "opus-5[1m]", 251_000, 2, can_send=True, window=1_000_000, commits=2, mode="acceptEdits",
                 prompt="Reorganise the UKG process repo: exports, loaders and the cron entries each in their own package, tests green after every move.",
                 reply="Moved the UKG exports into ukg/exports/ and the loaders into ukg/load/, with the old import paths kept as thin shims so the cron entries keep working until I touch them. The suite passed after each move; running it once more end to end before I rewrite the cron entries and drop the shims.",
                 tasks={"total": 5, "done": 5, "current": ""}),
-        session(3, "Hazelwood Frost findings memo", "working", "agents running", "fable-5-1[1m]", 420_000, 1, agents=3, active_agents=2, can_send=True, window=1_000_000, compactions=1,
+        session(3, "Hazelwood Frost findings memo", "working", "agents running", "gpt-6-astra", 420_000, 1, agents=3, active_agents=2, can_send=True, window=1_000_000, compactions=1, agent="codex",
                 prompt="Turn the Hazelwood Frost findings into a memo for the steering group: risks first, then the evidence, one page.",
                 reply="Three reviewers are reading the findings in parallel: one checks the figures against the audit export, one reads the interview notes for anything the figures miss, one drafts the risk section. I will merge their notes into the memo's risk section and keep the evidence to one page as asked."),
-        session(4, "ITOPS features gap analysis", "idle", "waiting for you", "opus-5[1m]", 304_000, 31, agents=1, can_send=True, window=1_000_000, commits=1,
+        session(4, "ITOPS features gap analysis", "idle", "waiting for you", "deepseek-v4.1-flash", 304_000, 31, agents=1, can_send=True, window=1_000_000, commits=1, agent="opencode", agent_detail="build",
                 prompt="Compare the ITOPS feature list with what the vendor shipped and write up the gaps, blocking ones first.",
                 reply="Gap analysis is drafted in docs/itops-gaps.md: 14 features, 5 blocking. The blocking ones are all on the ticketing side (SLA clocks, escalation rules, the on-call rota sync); the rest are reporting and can wait for the next release. Want me to open tickets for the blocking ones?",
+                history=[
+                    {"role": "user", "text": "The vendor says the new ITOPS release is feature complete. Can you sanity-check that?"},
+                    {"role": "assistant", "text": "I pulled their release notes and our feature list: several ticketing features are missing, so the claim is generous. I can write up the gaps."},
+                    {"role": "user", "text": "Compare the ITOPS feature list with what the vendor shipped and write up the gaps, blocking ones first."},
+                    {"role": "assistant", "text": "Gap analysis is drafted in docs/itops-gaps.md: 14 features, 5 blocking. The blocking ones are all on the ticketing side (SLA clocks, escalation rules, the on-call rota sync); the rest are reporting and can wait for the next release. Want me to open tickets for the blocking ones?"},
+                ],
                 tasks={"total": 4, "done": 2, "current": "Open tickets for the blocking gaps"}),
     ][:4]
     state.sessions_summary = {"today": 21, "done": 5, "working": 2, "idle": 2, "attention": 1}
@@ -128,6 +147,40 @@ def fill_demo(state: State) -> None:
         commit("31d9e04", "dotfiles", "feat: hyprland window rules", 200, 60, 0),
     ]
     state.git = {"commits": commits, "count": 9, "added": 412, "deleted": 88}
+    # CI: one run still going, one failure a newer run has not cleared
+    state.github = {
+        "configured": True,
+        "running": 1,
+        "failed": 1,
+        "runs": [
+            {
+                "id": 9001,
+                "repo": "NordsteinSoftware/Proxytrace",
+                "name": "E2E",
+                "title": "fix: clear the open bug backlog",
+                "branch": "bugfixes",
+                "status": "in_progress",
+                "conclusion": "",
+                "url": "https://github.com/NordsteinSoftware/Proxytrace/actions/runs/9001",
+                "number": 412,
+                "started_at": (now - timedelta(minutes=3, seconds=20)).isoformat(),
+                "updated_at": (now - timedelta(seconds=20)).isoformat(),
+            },
+            {
+                "id": 9002,
+                "repo": "JabbaKadabra/Edgeboard",
+                "name": "ci",
+                "title": "add codex and opencode",
+                "branch": "other_agents",
+                "status": "completed",
+                "conclusion": "failure",
+                "url": "https://github.com/JabbaKadabra/Edgeboard/actions/runs/9002",
+                "number": 17,
+                "started_at": (now - timedelta(minutes=14)).isoformat(),
+                "updated_at": (now - timedelta(minutes=12)).isoformat(),
+            },
+        ],
+    }
     cpu_hist = [30 + 25 * abs(math.sin(i / 7)) + rnd.uniform(-5, 5) for i in range(120)]
     gpu_hist = [10 + 60 * abs(math.sin(i / 11)) for i in range(120)]
     state.system = {

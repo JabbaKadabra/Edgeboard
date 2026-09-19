@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import time
+from datetime import datetime, timezone
 
 import pytest
 
@@ -59,8 +60,14 @@ class Dash(TestServer):
     def __init__(self):
         self.state = State()
         fill_demo(self.state)
+        self.opened: list[str] = []  # URLs the page asked the server to open in the desktop browser
         settings = Settings(host="127.0.0.1", port=free_port(), alert_sound=True)
-        super().__init__(create_app(settings, self.state, start_collectors=False), settings.port)
+        app = create_app(settings, self.state, start_collectors=False, opener=self._open)
+        super().__init__(app, settings.port)
+
+    def _open(self, url: str) -> bool:
+        self.opened.append(url)
+        return True
 
     def first(self, status: str) -> dict:
         return next(s for s in self.state.sessions if s["status"] == status)
@@ -132,6 +139,21 @@ def test_a_session_turning_to_attention_alerts_but_a_first_sighting_does_not(das
     assert page.errors == []
 
 
+def test_cards_show_which_agent_a_session_belongs_to(dash, context):
+    page = open_dash(context, dash)
+    # the demo has a codex and an opencode card: each carries its agent in the figures grid
+    badges = page.locator("#sessions .card .card-agent")
+    expect(badges).to_have_count(4)
+    assert [b.strip() for b in badges.all_text_contents()] == ["claude", "claude", "codex", "opencode build"]
+    # a session without an agent (older snapshot) shows no badge at all
+    session = dash.state.sessions[0]
+    session.pop("agent")
+    expect(card_of(page, session).locator(".card-agent")).to_be_hidden()
+    session["agent"] = "claude"
+    expect(card_of(page, session).locator(".card-agent")).to_have_text("claude")
+    assert page.errors == []
+
+
 def test_cards_limits_and_commit_rows_update_in_place(dash, context):
     page = open_dash(context, dash)
     page.evaluate("""() => {
@@ -150,6 +172,118 @@ def test_cards_limits_and_commit_rows_update_in_place(dash, context):
     page.evaluate("document.querySelectorAll('#git-commits .commit').forEach((el) => { el.dataset.mark = 'kept'; })")
     page.wait_for_timeout(2_200)
     assert page.evaluate("[...document.querySelectorAll('#git-commits .commit')].every((el) => el.dataset.mark === 'kept')")
+    assert page.errors == []
+
+
+def test_github_rows_follow_the_runs_and_a_new_failure_chimes(dash, context):
+    page = open_dash(context, dash, init_script=FAKE_AUDIO)
+    expect(page.locator("#github-runs .run")).to_have_count(2)
+    expect(page.locator("#github-runs .run.running")).to_have_count(1)
+    expect(page.locator("#github-runs .run.failed")).to_have_count(1)
+    expect(page.locator("#github-summary")).to_have_text("1 running · 1 failed")
+    # rows keep their DOM nodes across snapshots
+    page.evaluate("document.querySelectorAll('#github-runs .run').forEach((el) => { el.dataset.mark = 'kept'; })")
+    # the running run finishes red: its row turns failed and the page chimes
+    running = next(r for r in dash.state.github["runs"] if r["status"] != "completed")
+    running["status"], running["conclusion"] = "completed", "failure"
+    running["updated_at"] = datetime.now(timezone.utc).isoformat()
+    dash.state.github["running"], dash.state.github["failed"] = 0, 2
+    expect(page.locator("#github-runs .run.failed")).to_have_count(2)
+    expect(page.locator("#github-summary")).to_have_text("2 failed")
+    assert page.evaluate("[...document.querySelectorAll('#github-runs .run')].every((el) => el.dataset.mark === 'kept')")
+    assert page.evaluate("window.__chimes") == [1046, 1318]
+    # a brand-new failed run chimes again
+    now = datetime.now(timezone.utc).isoformat()
+    dash.state.github["runs"] = [*dash.state.github["runs"], {
+        "id": 9003, "repo": "JabbaKadabra/Edgeboard", "name": "ci", "title": "new", "branch": "main",
+        "status": "completed", "conclusion": "failure", "url": "", "number": 18,
+        "started_at": now, "updated_at": now,
+    }]
+    dash.state.github["failed"] = 3
+    expect(page.locator("#github-runs .run")).to_have_count(3)
+    assert page.evaluate("window.__chimes") == [1046, 1318, 1046, 1318]
+    # clearing the list takes the rows away and shows the empty state
+    dash.state.github["runs"] = []
+    dash.state.github.update({"running": 0, "failed": 0})
+    expect(page.locator("#github-runs .run")).to_have_count(0)
+    expect(page.locator("#github-empty")).to_be_visible()
+    expect(page.locator("#github-empty")).to_have_text("no running or failed runs")
+    assert page.errors == []
+
+
+def test_tapping_the_ci_pane_opens_run_details_that_link_to_github(dash, context):
+    page = open_dash(context, dash)
+    expect(page.locator("#ci-overlay")).to_be_hidden()
+    page.locator("#github-panel").click()
+    expect(page.locator("#ci-overlay")).to_be_visible()
+    rows = page.locator("#ci-runs .ci-run")
+    expect(rows).to_have_count(2)
+    # the demo's running run: workflow, title, repo@branch, run number and elapsed state
+    running = page.locator('#ci-runs .ci-run[data-id="9001"]')
+    expect(running).to_have_class(re.compile(r"\brunning\b"))
+    assert running.get_attribute("href") == "https://github.com/NordsteinSoftware/Proxytrace/actions/runs/9001"
+    expect(running.locator(".ci-name")).to_have_text("E2E")
+    expect(running.locator(".ci-title")).to_have_text("fix: clear the open bug backlog")
+    expect(running.locator(".ci-sub")).to_contain_text("Proxytrace@bugfixes")
+    expect(running.locator(".ci-sub")).to_contain_text("#412")
+    expect(running.locator(".ci-when")).to_contain_text("running")
+    failed = page.locator('#ci-runs .ci-run[data-id="9002"]')
+    expect(failed).to_have_class(re.compile(r"\bfailed\b"))
+    assert failed.get_attribute("href") == "https://github.com/JabbaKadabra/Edgeboard/actions/runs/9002"
+    expect(failed.locator(".ci-when")).to_contain_text("failed")
+    expect(failed.locator(".ci-open")).to_have_text("open ↗")
+    # tapping a run asks the server to open it in the desktop browser and never
+    # navigates the kiosk away; the row shows it was handed over, also after
+    # the next snapshot repaints it
+    expect(page).to_have_url(re.compile(r"127\.0\.0\.1"))
+    failed.click()
+    expect(failed).to_have_class(re.compile(r"\bopened\b"))
+    assert dash.opened == ["https://github.com/JabbaKadabra/Edgeboard/actions/runs/9002"]
+    dash.state.github["runs"][1]["updated_at"] = datetime.now(timezone.utc).isoformat()
+    page.wait_for_timeout(1_200)  # a snapshot went by
+    expect(failed).to_have_class(re.compile(r"\bopened\b"))
+    expect(page.locator("#ci-overlay")).to_be_visible()
+    expect(page).to_have_url(re.compile(r"127\.0\.0\.1"))  # still the dashboard
+    # the overlay stays live: the running run ends red and its row updates in place
+    page.evaluate("document.querySelectorAll('#ci-runs .ci-run').forEach((el) => { el.dataset.mark = 'kept'; })")
+    running_run = next(r for r in dash.state.github["runs"] if r["status"] != "completed")
+    running_run["status"], running_run["conclusion"] = "completed", "timed_out"
+    running_run["updated_at"] = datetime.now(timezone.utc).isoformat()
+    dash.state.github["running"], dash.state.github["failed"] = 0, 2
+    expect(page.locator("#ci-runs .ci-run.failed")).to_have_count(2)
+    expect(running.locator(".ci-when")).to_contain_text("timed out")
+    assert page.evaluate("[...document.querySelectorAll('#ci-runs .ci-run')].every((el) => el.dataset.mark === 'kept')")
+    # a run the API gave no url for is listed but cannot be opened
+    now = datetime.now(timezone.utc).isoformat()
+    dash.state.github["runs"] = [*dash.state.github["runs"], {
+        "id": 9003, "repo": "JabbaKadabra/Edgeboard", "name": "ci", "title": "no url", "branch": "main",
+        "status": "in_progress", "conclusion": "", "url": "", "number": 18,
+        "started_at": now, "updated_at": now,
+    }]
+    dash.state.github["running"], dash.state.github["failed"] = 1, 2
+    expect(rows).to_have_count(3)
+    no_link = page.locator('#ci-runs .ci-run[data-id="9003"]')
+    expect(no_link).to_have_js_property("tagName", "DIV")
+    expect(no_link.locator(".ci-open")).to_have_text("no link")
+    # clearing the list leaves the pane's empty text in the overlay
+    dash.state.github["runs"] = []
+    dash.state.github.update({"running": 0, "failed": 0})
+    expect(rows).to_have_count(0)
+    expect(page.locator("#ci-empty")).to_have_text("no running or failed runs")
+    # a backdrop tap closes it
+    page.locator("#ci-overlay").click(position={"x": 5, "y": 5})
+    expect(page.locator("#ci-overlay")).to_be_hidden()
+    assert page.errors == []
+
+
+def test_the_ci_overlay_closes_on_its_own_after_twenty_seconds(dash, context):
+    page = open_dash(context, dash, fake_clock=True)
+    page.locator("#github-panel").click()
+    expect(page.locator("#ci-overlay")).to_be_visible()
+    page.clock.fast_forward(19_000)
+    expect(page.locator("#ci-overlay")).to_be_visible()
+    page.clock.fast_forward(1_500)
+    expect(page.locator("#ci-overlay")).to_be_hidden()
     assert page.errors == []
 
 
@@ -213,6 +347,28 @@ def test_the_overlay_closes_on_its_own_after_twenty_seconds(dash, context):
     expect(page.locator("#overlay")).to_be_visible()
     page.clock.fast_forward(1_500)
     expect(page.locator("#overlay")).to_be_hidden()
+    assert page.errors == []
+
+
+def test_the_overlay_transcript_follows_only_while_the_reader_is_at_the_end(dash, context):
+    page = open_dash(context, dash)
+    idle = dash.first("idle")
+    idle["history"] = [{"role": "user" if i % 2 == 0 else "assistant", "text": f"message {i} " + "x" * 180} for i in range(20)]
+    card_of(page, idle).locator(".card-title").click()
+    box = page.locator("#ov-history")
+    expect(box.locator(".ov-msg")).to_have_count(20)
+    # opening lands on the newest message
+    assert box.evaluate("(el) => el.scrollTop + el.clientHeight >= el.scrollHeight - 2")
+    # scrolled back to the top, a new message must not yank the reader down
+    box.evaluate("(el) => { el.scrollTop = 0; }")
+    idle["history"] = idle["history"] + [{"role": "assistant", "text": "the newest message"}]
+    expect(box.locator(".ov-msg")).to_have_count(21)
+    assert box.evaluate("(el) => el.scrollTop") == 0
+    # back at the end, it follows again
+    box.evaluate("(el) => { el.scrollTop = el.scrollHeight; }")
+    idle["history"] = idle["history"] + [{"role": "user", "text": "newest yet"}]
+    expect(box.locator(".ov-msg")).to_have_count(22)
+    assert box.evaluate("(el) => el.scrollTop + el.clientHeight >= el.scrollHeight - 2")
     assert page.errors == []
 
 

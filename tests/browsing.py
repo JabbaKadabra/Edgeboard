@@ -65,9 +65,11 @@ class TestServer:
 
 def launch_chromium(playwright):
     """Playwright's own Chromium, else the system one (``EDGEBOARD_BROWSER`` or PATH)."""
+    from playwright.sync_api import Error as PlaywrightError
+
     try:
         return playwright.chromium.launch()
-    except playwright.Error:
+    except PlaywrightError:
         system = os.environ.get("EDGEBOARD_BROWSER") or shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
         if not system:
             pytest.skip("no Chromium: run `playwright install chromium`")

@@ -23,7 +23,7 @@
     <div id="sys-line" class="sys-line"></div>
   </section>
 
-  <!-- centre: limits with today's counters, the session cards, then activity / system history / git -->
+  <!-- centre: limits with today's counters, the session cards, then github ci / system history / git -->
   <section class="col col-main">
     <div class="panel panel-limits">
       <div class="panel-head"><span>Limits <span id="usage-source" class="muted"></span></span></div>
@@ -42,14 +42,14 @@
         <span id="sessions-summary" class="muted"></span>
       </div>
       <div id="sessions" class="sessions"></div>
-      <div id="sessions-empty" class="sessions-empty" hidden>no Claude Code sessions today</div>
+      <div id="sessions-empty" class="sessions-empty" hidden>no sessions today</div>
     </div>
     <div class="bottom-row">
-      <div class="panel panel-activity">
-        <div class="panel-head"><span>Activity</span><span id="timeline-peak" class="muted"></span></div>
-        <!-- 24 hourly burn buckets as a smooth area; a tap reads the bucket under the finger -->
-        <svg id="timeline" class="burn" viewBox="0 0 480 100" preserveAspectRatio="none"><path id="burn-area" class="burn-area" d=""></path><path id="burn-line" class="burn-line" d=""></path></svg>
-        <div id="timeline-labels" class="timeline-labels"></div>
+      <div class="panel panel-github" id="github-panel">
+        <div class="panel-head"><span>GitHub <span class="muted">CI</span></span><span id="github-summary" class="muted"></span></div>
+        <!-- one row per Actions run: in progress first, then failures a newer run has not cleared -->
+        <div id="github-runs" class="runs"></div>
+        <div id="github-empty" class="github-empty" hidden></div>
       </div>
       <div class="panel panel-system">
         <div class="panel-head"><span>System</span><span id="sys-uptime" class="muted"></span></div>
@@ -102,6 +102,7 @@
           <dt>branch</dt><dd id="ov-branch"></dd>
           <dt>commits</dt><dd id="ov-commits"></dd>
           <dt>model</dt><dd id="ov-model"></dd>
+          <dt>agent</dt><dd id="ov-agent"></dd>
           <dt>started</dt><dd id="ov-started"></dd>
           <dt>last activity</dt><dd id="ov-activity"></dd>
           <dt>messages</dt><dd id="ov-msgs"></dd>
@@ -113,10 +114,9 @@
         </dl>
       </div>
       <div class="ov-right">
-        <div class="ov-prompt-head">last prompt</div>
-        <div id="ov-prompt" class="ov-prompt"></div>
-        <div class="ov-prompt-head">last reply</div>
-        <div id="ov-reply" class="ov-reply"></div>
+        <div class="ov-prompt-head">history</div>
+        <!-- the conversation tail from the snapshot (s.history): one row per message, oldest first -->
+        <div id="ov-history" class="ov-history"></div>
         <!-- a pending AskUserQuestion: every question with its options; answered through POST /api/sessions/{id}/answer -->
         <div id="ov-questions" class="ov-questions" hidden></div>
         <!-- follow-ups for a live session (settings.presets) and a free-text line; both go to POST /api/sessions/{id}/send -->
@@ -129,6 +129,19 @@
         </div>
       </div>
     </div>
+  </div>
+</div>
+<!-- github ci detail: opened by tapping the CI pane, refilled from every snapshot while open;
+     each run is a link that opens its Actions page in a new tab -->
+<div id="ci-overlay" class="overlay" hidden>
+  <div id="ci-overlay-card" class="overlay-card ci-overlay-card">
+    <div class="ov-top">
+      <span class="ci-pill">GitHub <span class="muted">CI</span></span>
+      <span id="ci-summary" class="muted"></span>
+      <span class="ci-hint muted">tap a run to open it on GitHub ↗</span>
+    </div>
+    <div id="ci-runs" class="ci-runs"></div>
+    <div id="ci-empty" class="github-empty" hidden></div>
   </div>
 </div>
 <script src="/static/app.js?v=__BUILD__"></script>

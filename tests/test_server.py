@@ -20,10 +20,11 @@ def make_client(**kw):
 def test_state_shape():
     client, _ = make_client()
     data = client.get("/api/state").json()
-    for key in ("now", "usage", "sessions", "sessions_summary", "spotify", "spotify_queue", "system", "git", "errors"):
+    for key in ("now", "usage", "sessions", "sessions_summary", "spotify", "spotify_queue", "system", "git", "github", "errors"):
         assert key in data
     assert data["usage"]["windows"] == []
     assert data["git"] == {"commits": [], "count": 0, "added": 0, "deleted": 0}
+    assert data["github"] == {"configured": False, "runs": [], "running": 0, "failed": 0}
     assert data["spotify_queue"] == {"configured": False, "tracks": []}
 
 
@@ -42,6 +43,84 @@ def test_spotify_control():
     assert client.post("/api/spotify/explode").status_code == 404
 
 
+def test_open_route_spawns_the_configured_browser_on_the_configured_monitor(monkeypatch):
+    from edgeboard import server
+
+    spawned = []
+    focused = []
+
+    def spawn(argv, **kw):
+        spawned.append((argv, kw))
+
+    def focus(name):
+        focused.append(name)
+
+    monkeypatch.setattr(server.shutil, "which", lambda name: "/usr/bin/" + name)
+    settings = Settings(open_command="firefox --new-window", open_monitor="DP-2")
+    state = State()
+    state.github = {"configured": True, "runs": [{"id": 1, "url": "https://github.com/o/r/actions/runs/1"}], "running": 1, "failed": 0}
+    opener = lambda url: server.open_external(url, settings, spawn=spawn, focus=focus)  # noqa: E731
+    app = create_app(settings, state, start_collectors=False, opener=opener)
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
+
+    r = client.post("/api/open", json={"url": "https://github.com/o/r/actions/runs/1"})
+    assert r.status_code == 200 and r.json()["opened"] is True
+    # the monitor is focused first, then the browser is spawned detached with the URL appended
+    assert focused == ["DP-2"]
+    argv, kw = spawned[0]
+    assert argv == ["firefox", "--new-window", "https://github.com/o/r/actions/runs/1"]
+    assert kw["start_new_session"] is True
+    # only the runs the snapshot carries may be opened, and only over http(s)
+    assert client.post("/api/open", json={"url": "https://github.com/other/repo/actions/runs/9"}).status_code == 404
+    assert client.post("/api/open", json={"url": "file:///etc/passwd"}).status_code == 422
+    assert client.post("/api/open", json={"url": "javascript:alert(1)"}).status_code == 422
+    assert len(spawned) == 1 and len(focused) == 1
+
+
+def test_focus_monitor_speaks_both_hyprland_config_styles(monkeypatch):
+    from edgeboard import server
+
+    calls = []
+    monkeypatch.setattr(server.shutil, "which", lambda name: "/usr/bin/" + name)
+    server._focus_monitor("DP-2", runner=lambda argv, **kw: calls.append(argv))
+    # the legacy parser takes the dispatcher, the Lua config the eval form (the
+    # legacy call fails there, so both are sent and failures ignored)
+    assert calls == [
+        ["hyprctl", "dispatch", "focusmonitor", "DP-2"],
+        ["hyprctl", "eval", 'return hl.dsp.focus({ monitor = "DP-2" })'],
+    ]
+    # a missing hyprctl or a suspicious monitor name never runs anything
+    monkeypatch.setattr(server.shutil, "which", lambda name: None)
+    server._focus_monitor("DP-2", runner=lambda argv, **kw: calls.append(argv))
+    monkeypatch.setattr(server.shutil, "which", lambda name: "/usr/bin/" + name)
+    server._focus_monitor('DP-2" }); os.execute("boom', runner=lambda argv, **kw: calls.append(argv))
+    assert len(calls) == 2
+
+
+def test_open_route_reports_a_missing_browser_and_never_spawns_in_demo(monkeypatch):
+    from edgeboard import server
+
+    spawned = []
+    monkeypatch.setattr(server.shutil, "which", lambda name: None)
+
+    def opener(url):
+        return server.open_external(url, Settings(open_command=""), spawn=lambda *a, **kw: spawned.append(a))
+
+    state = State()
+    state.github = {"configured": True, "runs": [{"id": 1, "url": "https://github.com/o/r/actions/runs/1"}], "running": 1, "failed": 0}
+    client = TestClient(create_app(Settings(), state, start_collectors=False, opener=opener), base_url="http://127.0.0.1:8765")
+    # an empty open_command spawns nothing and the page gets a 503 to show
+    assert client.post("/api/open", json={"url": "https://github.com/o/r/actions/runs/1"}).status_code == 503
+    assert spawned == []
+    # demo mode never touches the desktop, even with a command configured
+    demo_state = State()
+    demo = create_app(Settings(demo=True), demo_state, start_collectors=False)
+    run = demo_state.github["runs"][0]
+    r = TestClient(demo, base_url="http://127.0.0.1:8765").post("/api/open", json={"url": run["url"]})
+    assert r.status_code == 200 and r.json()["opened"] is False
+    assert spawned == []
+
+
 def test_demo_mode_serves_canned_data():
     client, _ = make_client(demo=True)
     data = client.get("/api/state").json()
@@ -53,6 +132,8 @@ def test_demo_mode_serves_canned_data():
     assert data["spotify_queue"]["configured"] and len(data["spotify_queue"]["tracks"]) == 6
     assert data["system"]["cpu"]["percent"] == 6.0
     assert data["git"]["count"] >= len(data["git"]["commits"]) > 0 and data["git"]["added"] > 0
+    assert data["github"]["configured"] and data["github"]["running"] == 1 and data["github"]["failed"] == 1
+    assert all(run["repo"] and run["name"] and run["branch"] for run in data["github"]["runs"])
     assert sum(s["commits"] for s in data["sessions"]) > 0
     r = client.post("/api/spotify/play_pause").json()
     assert r["spotify"]["status"] == "Paused"
@@ -319,13 +400,13 @@ def test_sessions_collector_passes_hooks_and_prunes_expired(monkeypatch, tmp_pat
     }
     seen = {}
 
-    def fake_collect(settings, now=None, pid_alive=None, hooks=None):
+    def fake_collect(settings, now=None, hooks=None, adapters=None):
         seen["hooks"] = hooks
-        return [], {"today": 0, "done": 0, "working": 0, "idle": 0, "attention": 0}
+        return [], {"today": 0, "done": 0, "working": 0, "idle": 0, "attention": 0}, []
 
     import edgeboard.server as server
 
-    monkeypatch.setattr(server, "collect_sessions", fake_collect)
+    monkeypatch.setattr(server, "collect_agents", fake_collect)
     c = Collectors(Settings(claude_dir=tmp_path), state, lambda a: (0, ""))
     asyncio.run(c._sessions())
     assert set(seen["hooks"]) == {"fresh"} and set(state.hooks) == {"fresh"}
@@ -356,11 +437,11 @@ def test_sessions_loop_notifies_on_attention_transitions(monkeypatch):
         def to_dict(self):
             return dict(self)
 
-    def fake_collect(settings, now, pid_alive, hooks):
+    def fake_collect(settings, now, hooks, adapters=None):
         sessions, summary = rounds.pop(0)
-        return [FakeSession(s) for s in sessions], summary
+        return [FakeSession(s) for s in sessions], summary, []
 
-    monkeypatch.setattr(server, "collect_sessions", fake_collect)
+    monkeypatch.setattr(server, "collect_agents", fake_collect)
     sent = []
     collectors = Collectors(Settings(alert_notify=True), State(), spotify_runner=lambda args: (0, ""), notifier=lambda title, body: sent.append((title, body)))
 
@@ -425,7 +506,7 @@ def test_git_collector_reads_session_repositories_and_configured_ones(monkeypatc
             return dict(self)
 
     rows = [FakeSession({"id": "a", "status": "idle", "cwd": "/home/me/Dashboard/edgeboard", "started_at": "2026-09-04T09:30:00+00:00"}), FakeSession({"id": "d", "status": "done", "cwd": "/srv/blog", "started_at": None})]
-    monkeypatch.setattr(server, "collect_sessions", lambda *a, **k: (rows, {}))
+    monkeypatch.setattr(server, "collect_agents", lambda *a, **k: (rows, {}, []))
     asyncio.run(c._sessions())
     assert [s["commits"] for s in state.sessions] == [1, 1]
 
@@ -440,6 +521,98 @@ def test_git_collector_retries_soon_while_there_is_nothing_to_read(monkeypatch):
     state = State()
     assert asyncio.run(Collectors(Settings(), state, lambda a: (0, ""))._git()) == 5.0
     assert state.git["count"] == 0
+
+
+# ---------- github ----------
+
+
+def _gh_run(id: int, repo: str, status: str = "completed", conclusion: str = "failure", branch: str = "main", minutes_ago: float = 10.0, name: str = "ci"):
+    from datetime import datetime, timedelta, timezone
+
+    from edgeboard.collectors.github import Run
+
+    stamp = (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat()
+    return Run(id=id, repo=repo, name=name, title="t", branch=branch, status=status, conclusion=conclusion, url="", number=1, started_at=stamp, updated_at=stamp)
+
+
+def test_github_collector_writes_runs_and_alerts_once_per_new_failure():
+    import asyncio
+
+    from edgeboard.collectors.github import GitHubError
+    from edgeboard.server import Collectors
+
+    class Client:
+        def __init__(self):
+            self.by_repo = {}
+
+        def runs(self, repo):
+            return list(self.by_repo.get(repo, []))
+
+    notified = []
+    state = State()
+    c = Collectors(Settings(github_repos=("me/ci",), alert_notify=True), state, lambda a: (0, ""), notifier=lambda title, body: notified.append((title, body)))
+    client = Client()
+    c._github_client = client  # a real one would need the network
+    client.by_repo["me/ci"] = [
+        _gh_run(1, "me/ci", status="in_progress", conclusion="", minutes_ago=3),
+        _gh_run(2, "me/ci", minutes_ago=12, branch="other_agents"),
+    ]
+    assert asyncio.run(c._github()) is None
+    assert state.github["configured"] is True and state.github["running"] == 1 and state.github["failed"] == 1
+    assert [r["id"] for r in state.github["runs"]] == [1, 2]
+    assert notified == []  # the poll that first sees the failures only records them
+
+    # a failure the previous poll did not show alerts once, and not again on the next poll
+    client.by_repo["me/ci"] = [*client.by_repo["me/ci"], _gh_run(3, "me/ci", minutes_ago=1, branch="dev")]
+    asyncio.run(c._github())
+    assert state.github["failed"] == 2
+    assert notified == [("CI failed", "me/ci ci on dev")]
+    asyncio.run(c._github())
+    assert notified == [("CI failed", "me/ci ci on dev")]
+
+    # a failure that leaves the list (the row cap) and comes back must not alert again
+    client.by_repo["me/ci"] = client.by_repo["me/ci"][:2]  # drops id 3
+    asyncio.run(c._github())
+    client.by_repo["me/ci"] = [*client.by_repo["me/ci"], _gh_run(3, "me/ci", minutes_ago=1, branch="dev")]
+    asyncio.run(c._github())
+    assert notified == [("CI failed", "me/ci ci on dev")]
+
+    # a repository that cannot be read raises after writing what the others gave
+    class Broken(Client):
+        def runs(self, repo):
+            raise GitHubError("HTTP 403 (rate limited, or the token cannot read this repository)")
+
+    c._github_client = Broken()
+    try:
+        asyncio.run(c._github())
+    except RuntimeError as exc:
+        assert "me/ci: HTTP 403" in str(exc)
+    else:
+        raise AssertionError("a failing repository must raise for the error line")
+
+
+def test_github_collector_without_a_token_is_not_an_error(monkeypatch):
+    import asyncio
+
+    import edgeboard.server as server
+    from edgeboard.server import Collectors
+
+    monkeypatch.setattr(server.github, "load_token", lambda explicit="": "")
+    state = State()
+    c = Collectors(Settings(github_repos=("me/ci",)), state, lambda a: (0, ""))
+    assert asyncio.run(c._github()) is None
+    assert state.github == {"configured": False, "runs": [], "running": 0, "failed": 0}
+    assert c._github_client is None
+
+
+def test_github_collector_retries_soon_without_repositories():
+    import asyncio
+
+    from edgeboard.server import Collectors
+
+    state = State()
+    assert asyncio.run(Collectors(Settings(), state, lambda a: (0, ""))._github()) == 5.0
+    assert state.github["configured"] is False
 
 
 # ---------- answering questions and sending presets ----------
@@ -545,10 +718,78 @@ def test_sessions_collector_expires_pending_answers(monkeypatch, tmp_path):
     state.hooks = {"abc": {**_ASK_HOOK, "ts": time.time()}}
     answers = Answers(state.hooks)
     answers.open("toolu_1", "abc", now=time.time() - ABANDON_AFTER - 1)
-    monkeypatch.setattr(server, "collect_sessions", lambda *a, **k: ([], {"today": 0, "done": 0, "working": 0, "idle": 0, "attention": 0}))
+    monkeypatch.setattr(server, "collect_agents", lambda *a, **k: ([], {"today": 0, "done": 0, "working": 0, "idle": 0, "attention": 0}, []))
     c = Collectors(Settings(claude_dir=tmp_path), state, lambda a: (0, ""), answers=answers)
     asyncio.run(c._sessions())
     assert state.hooks["abc"]["question_state"] == "abandoned"
+
+
+def test_codex_permission_hook_is_answerable_from_the_panel():
+    client, _ = make_client()
+    hook = {"session_id": "thr_1", "agent": "codex", "hook_event_name": "PermissionRequest", "tool_use_id": "perm_1", "tool_name": "Bash", "tool_input": {"command": "git push"}}
+    assert client.post("/api/hook", json=hook).json() == {"ok": True}
+    assert client.get("/api/answer/perm_1?wait=0").json() == {"status": "pending"}
+    r = client.post("/api/sessions/thr_1/answer", json={"tool_use_id": "perm_1", "answers": {"Allow Bash?": "Allow"}})
+    assert r.status_code == 200
+    assert client.get("/api/answer/perm_1?wait=0").json() == {"status": "answered", "answers": {"Allow Bash?": "Allow"}}
+
+
+def test_opencode_answers_and_prompts_go_through_the_service(monkeypatch, tmp_path):
+    from edgeboard.collectors import opencode
+
+    calls = []
+
+    def fake_request(service, timeout=5.0):
+        def request(method, path, body=None):
+            calls.append((method, path, body))
+            return {"data": {}}
+
+        return request
+
+    state_file = tmp_path / "service.json"
+    state_file.write_text('{"url": "http://127.0.0.1:49374", "password": "pw"}')
+    monkeypatch.setattr(opencode, "default_request", fake_request)
+    opencode.PENDING._items.clear()
+    opencode.PENDING.remember("per_1", opencode.Pending("ses_1", "permission", "per_1", {"Allow Bash?": {"key": "", "type": "choice", "options": {"Allow once": "once", "Deny": "reject"}}}))
+    client, _ = make_client(opencode_state_file=state_file)
+
+    # answering a permission from the panel reaches the service's reply route
+    r = client.post("/api/sessions/ses_1/answer", json={"tool_use_id": "per_1", "answers": {"Allow Bash?": "Allow once"}})
+    assert r.status_code == 200 and calls[-1] == ("POST", "/api/session/ses_1/permission/per_1/reply", {"decision": "once"})
+    assert opencode.PENDING.get("per_1") is not None  # only the collector expires entries
+
+    # a prompt goes to the prompt route; a done session resumes instead of steering
+    r = client.post("/api/sessions/ses_1/send", json={"text": "carry on"})
+    assert r.status_code == 200 and calls[-1] == ("POST", "/api/session/ses_1/prompt", {"text": "carry on"})
+    client.app.state.dashboard.sessions = [{"id": "ses_9", "agent": "opencode", "status": "done"}]
+    r = client.post("/api/sessions/ses_9/send", json={"text": "again"})
+    assert r.status_code == 200 and calls[-1] == ("POST", "/api/session/ses_9/prompt", {"text": "again", "resume": True})
+
+    # an unknown question, a missing option and a missing service all fail cleanly
+    assert client.post("/api/sessions/ses_1/answer", json={"tool_use_id": "nope", "answers": {"q": "a"}}).status_code == 404
+    opencode.PENDING.remember("per_2", opencode.Pending("ses_1", "form", "frm_1", {"Deploy where?": {"key": "env", "type": "string", "options": {}}}))
+    assert client.post("/api/sessions/ses_1/answer", json={"tool_use_id": "per_2", "answers": {}}).status_code == 422
+    state_file.unlink()
+    assert client.post("/api/sessions/ses_1/send", json={"text": "x"}).status_code == 404
+    opencode.PENDING._items.clear()
+
+
+def test_codex_send_queues_a_message(monkeypatch):
+    import edgeboard.server as server
+
+    queued = []
+    monkeypatch.setattr(server, "queue_message", lambda thread_id, text: queued.append((thread_id, text)))
+    client, _ = make_client()
+    client.app.state.dashboard.sessions = [{"id": "01a0b864-e4b3-76c0-96d9-35853e476d60", "agent": "codex", "status": "idle"}]
+    r = client.post("/api/sessions/01a0b864-e4b3-76c0-96d9-35853e476d60/send", json={"text": "carry on"})
+    assert r.status_code == 200 and queued == [("01a0b864-e4b3-76c0-96d9-35853e476d60", "carry on")]
+
+    def boom(thread_id, text):
+        raise RuntimeError("codex queue failed")
+
+    monkeypatch.setattr(server, "queue_message", boom)
+    r = client.post("/api/sessions/01a0b864-e4b3-76c0-96d9-35853e476d60/send", json={"text": "x"})
+    assert r.status_code == 502 and "codex queue failed" in r.json()["detail"]
 
 
 # ---------- origin guard ----------

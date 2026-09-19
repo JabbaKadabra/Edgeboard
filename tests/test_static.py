@@ -108,9 +108,11 @@ def test_session_cards_show_agents_attention_and_open_an_overlay():
     # "attention" (permission prompt / question from a hook) gets its own colour and pulses
     assert re.search(r"^\.attention \.pill\s*\{", css, re.M) and re.search(r"^\.card\.attention\s*\{", css, re.M)
     # tapping a card opens a full-height overlay kept in index.html and filled from every snapshot
-    assert 'id="overlay"' in html and 'id="ov-prompt"' in html and 'id="ov-cwd"' in html
+    assert 'id="overlay"' in html and 'id="ov-history"' in html and 'id="ov-cwd"' in html
     assert '$("sessions").addEventListener("click"' in sessions_js
     assert "last_prompt" in sessions_js and "renderOverlay(" in sessions_js.split("function renderSessions")[1]
+    # the overlay carries the conversation tail the snapshot sends (s.history), not just the last reply
+    assert "renderHistory(" in sessions_js and "s.history" in sessions_js and "ov-msg" in sessions_js
     # dismissed by tapping the backdrop or after 20 s
     assert "20 * 1000" in sessions_js or "20000" in sessions_js
     assert '$("overlay").addEventListener("click"' in sessions_js
@@ -124,6 +126,13 @@ def test_server_unit_restarts_after_clean_exit():
     assert re.search(r"^RestartSec=3$", unit, re.M)
     assert re.search(r"^StartLimitIntervalSec=0$", unit, re.M)
     assert "systemctl --user stop edgeboard" in (ROOT / "README.md").read_text()
+
+
+def test_kiosk_starts_with_the_user_manager():
+    unit = (ROOT / "systemd" / "edgeboard-kiosk.service").read_text()
+    assert re.search(r"^WantedBy=default.target$", unit, re.M)
+    assert "graphical-session.target" not in unit
+    assert re.search(r"^Restart=always$", unit, re.M)
 
 
 def test_limits_show_pace_projection():
@@ -163,8 +172,8 @@ def test_session_cards_answer_questions_and_send_presets():
     # buttons post to the session routes and must not open the overlay
     assert "/api/sessions/" in sessions_js and "stopPropagation" in sessions_js
     assert '"answer"' in sessions_js and '"send"' in sessions_js and '"pass"' in sessions_js or "pass: true" in sessions_js
-    # the overlay carries the full question set, the presets, a free-text input and what Claude last said
-    for element in ('id="ov-questions"', 'id="ov-presets"', 'id="ov-input"', 'id="ov-send"', 'id="ov-reply"', 'id="ov-mode"', 'id="ov-waiting"'):
+    # the overlay carries the full question set, the presets, a free-text input and the transcript
+    for element in ('id="ov-questions"', 'id="ov-presets"', 'id="ov-input"', 'id="ov-send"', 'id="ov-history"', 'id="ov-mode"', 'id="ov-waiting"'):
         assert element in html, element
     assert "last_reply" in sessions_js and "permission_mode" in sessions_js and "waiting_since" in sessions_js
     # finger-sized buttons that never overflow the card
@@ -196,11 +205,11 @@ def test_limits_update_in_place():
     assert 'querySelector(".bar-fill")' in usage_js and "fill.style.width" in usage_js
 
 
-def test_three_columns_with_an_activity_system_git_row():
+def test_three_columns_with_a_github_system_git_row():
     html = (STATIC / "index.html").read_text()
     js = (STATIC / "app.js").read_text()
     css = (STATIC / "style.css").read_text()
-    # rail | centre | spotify; the centre stacks limits, one row of four cards and the activity row
+    # rail | centre | spotify; the centre stacks limits, one row of four cards and the bottom row
     cols = re.search(r"^\.dash\s*\{[^}]*grid-template-columns:\s*([^;]+);", css, re.M).group(1).split()
     assert len(cols) == 3, cols
     assert re.search(r"^\.sessions\s*\{[^}]*grid-template-columns:\s*repeat\(4,", css, re.M)
@@ -214,13 +223,18 @@ def test_three_columns_with_an_activity_system_git_row():
     limits = html.split('class="panel panel-limits"')[1].split('class="panel panel-sessions"')[0]
     assert 'id="limits"' in limits and 'id="t-msgs"' in limits and 'id="t-write"' in limits
     assert re.search(r"^\.panel-limits\s*\{[^}]*grid-template-columns:\s*1fr 1fr", css, re.M)
-    # the activity row: burn curve (tap reads the hour), cpu/gpu history with its legend values, today's commits
+    # the bottom row: CI runs (running and failed), cpu/gpu history with its legend values, today's commits
     row = html.split('class="bottom-row"')[1].split("</section>")[0]
-    assert 'id="timeline"' in row and 'id="burn-line"' in row and 'id="burn-area"' in row
+    assert 'id="github-runs"' in row and 'id="github-summary"' in row and 'id="github-empty"' in row
     assert 'id="spark-cpu"' in row and 'id="legend-cpu"' in row and 'id="legend-gpu"' in row
     assert 'id="git-commits"' in row and 'id="git-summary"' in row and 'id="git-empty"' in row
-    assert "smoothPath(" in js and "lastTimeline" in js and 'class="tb"' not in js
-    git_js = js.split("// ---------- git ----------")[1].split("// ---------- render root ----------")[0]
+    # the 24 h burn curve is gone with the Activity pane
+    assert 'id="timeline"' not in html and 'class="burn"' not in html
+    assert "smoothPath(" not in js and "lastTimeline" not in js and 'class="tb"' not in js
+    github_js = js.split("// ---------- github ----------")[1].split("// ---------- render root ----------")[0]
+    assert "run-when" in github_js and 'chime("alert")' in github_js and "runs.length" in github_js
+    assert "renderGithub(snap.github" in js
+    git_js = js.split("// ---------- git ----------")[1].split("// ---------- github ----------")[0]
     assert "c.hash" in git_js and "c.repo" in git_js and "c.message" in git_js and "fmtAgo(c.ts" in git_js
     assert "renderGit(snap.git" in js and "system_interval" in js
     # a finished card says how many commits it made; the overlay spells it out

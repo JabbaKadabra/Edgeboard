@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Iterator
@@ -17,6 +17,7 @@ from typing import Iterable, Iterator
 TITLE_MAX = 60
 PROMPT_MAX = 300
 TOOL_HINT_MAX = 40
+HISTORY_MAX = 10  # user/assistant messages kept per session for the detail overlay's transcript
 # Paired tags Claude Code injects into prompts (<system-reminder>…</system-reminder>,
 # <command-name>…</command-name>, …). Requires a matching closing tag so that
 # code like ``x < 5 and y > 3`` or ``List<String>`` is left alone.
@@ -56,6 +57,9 @@ class SessionFacts:
     last_tool_hint: str = ""  # short description of its input, see ``tool_hint``
     last_prompt: str = ""  # most recent user prompt, cleaned, up to PROMPT_MAX chars
     last_reply: str = ""  # most recent assistant text block, cleaned, up to PROMPT_MAX chars
+    # The conversation tail the detail overlay draws: ``{role: "user"|"assistant", text}``,
+    # oldest first, at most HISTORY_MAX entries (see ``append_history``).
+    history: list[dict] = field(default_factory=list)
     permission_mode: str = ""  # ``permissionMode`` of the latest user prompt (plan, default, acceptEdits, ...)
     # An AskUserQuestion Claude is waiting on (see ``flatten_question``): set by the
     # tool_use block, cleared by the tool_result that answers it.
@@ -275,6 +279,22 @@ def _int(value) -> int:
         return 0
 
 
+def append_history(history: list[dict], role: str, text: str, key: str = "", last_key: str = "") -> str:
+    """Append a message to a bounded conversation tail and return its dedupe key.
+
+    The same message written repeatedly while streaming (same ``key``) replaces
+    the previous entry so only its latest text shows; a message delivered twice
+    through different paths is dropped as an exact repeat. The list is trimmed
+    to the newest ``HISTORY_MAX`` entries in place.
+    """
+    if history and history[-1]["role"] == role and key and key == last_key:
+        history[-1]["text"] = text
+    elif not (history and history[-1]["role"] == role and history[-1]["text"] == text):
+        history.append({"role": role, "text": text})
+        del history[:-HISTORY_MAX]
+    return key
+
+
 class UsageParser:
     """Incremental ``UsageEvent`` collector: feed entries as the transcript grows.
 
@@ -336,6 +356,7 @@ class SessionParser:
         self._summary = ""
         self._seen_ids: set[str] = set()
         self._index = 0
+        self._history_key = ""  # dedupe key of the newest history entry (assistant message id)
 
     def feed(self, entries: Iterable[dict]) -> SessionFacts:
         facts = self.facts
@@ -383,11 +404,15 @@ class SessionParser:
                         if not self._first_prompt:
                             self._first_prompt = clean_prompt(prompt)
                         facts.last_prompt = clean_text(prompt, PROMPT_MAX)
+                        if facts.last_prompt:
+                            self._history_key = append_history(facts.history, "user", facts.last_prompt, f"u{index}", self._history_key)
                 else:
                     facts.last_kind = "assistant"
                     facts.last_stop_reason = str(message.get("stop_reason") or "")
                     facts.last_tool, facts.last_tool_hint = "", ""
                     facts.question = None
+                    msg_id = str(message.get("id") or entry.get("uuid") or f"#{index}")
+                    stream_key = str(message.get("id") or "")  # streaming repeats share the message id
                     for block in _content_blocks(message):
                         if block.get("type") == "tool_use" and isinstance(block.get("name"), str):
                             facts.last_tool = block["name"]
@@ -400,6 +425,7 @@ class SessionParser:
                             reply = clean_text(block["text"], PROMPT_MAX)
                             if reply:
                                 facts.last_reply = reply
+                                self._history_key = append_history(facts.history, "assistant", reply, stream_key, self._history_key)
                     if isinstance(message.get("model"), str) and message["model"]:
                         facts.model = message["model"]
                     usage = message.get("usage")
@@ -409,7 +435,6 @@ class SessionParser:
                             + _int(usage.get("cache_read_input_tokens"))
                             + _int(usage.get("cache_creation_input_tokens"))
                         )
-                    msg_id = str(message.get("id") or entry.get("uuid") or f"#{index}")
                     if msg_id not in self._seen_ids:
                         self._seen_ids.add(msg_id)
                         facts.assistant_messages += 1

@@ -269,22 +269,6 @@
     text("t-cache", fmtTokens(t.cache_read));
     text("t-write", fmtTokens(t.cache_write));
     text("t-msgs", String(t.messages || 0));
-
-    // 24 h burn: the hourly buckets as one smooth amber curve over its filled area
-    const tl = usage.timeline || [];
-    lastTimeline = tl;
-    const peak = Math.max(1, usage.peak || 0);
-    const line = smoothPath(tl.map((b) => b.tokens), peak);
-    $("burn-line").setAttribute("d", line);
-    $("burn-area").setAttribute("d", line ? `${line} L ${BURN_W},${BURN_H} L 0,${BURN_H} Z` : "");
-    peakLabel = tl.length ? `24 h burn · peak ${fmtTokens(usage.peak)}` : "";
-    if (Date.now() > tapUntil) text("timeline-peak", peakLabel);
-    const labels = $("timeline-labels");
-    if (tl.length && labels.childElementCount === 0) {
-      labels.innerHTML = [0, 6, 12, 18, 23].map((i) => `<span>${new Date(tl[i].hour_start).toLocaleTimeString([], { hour: "2-digit" })}</span>`).join("");
-    } else if (tl.length) {
-      [0, 6, 12, 18, 23].forEach((i, k) => { labels.children[k].textContent = new Date(tl[i].hour_start).toLocaleTimeString([], { hour: "2-digit" }); });
-    }
   }
 
   // Server-side pace projection: warn when the window fills before it resets,
@@ -296,37 +280,6 @@
     if (full < reset) return { warn: true, text: `▲ full ${fmtResetAt(w.projected_full_at)}` };
     return { warn: false, text: "safe until reset" };
   }
-
-  // The burn curve: a Catmull-Rom spline through the buckets as cubic segments
-  // in a 480x100 box (stretched by preserveAspectRatio="none"), clamped so the
-  // control points never dip below the base line.
-  const BURN_W = 480, BURN_H = 100;
-  function smoothPath(values, max) {
-    const n = values.length;
-    if (n < 2) return "";
-    const pts = values.map((v, i) => [(i * BURN_W) / (n - 1), BURN_H - (Math.max(0, v) / max) * BURN_H]);
-    const clamp = (y) => Math.max(0, Math.min(BURN_H, y));
-    let d = `M ${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
-    for (let i = 0; i < n - 1; i++) {
-      const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
-      d += ` C ${(p1[0] + (p2[0] - p0[0]) / 6).toFixed(1)},${clamp(p1[1] + (p2[1] - p0[1]) / 6).toFixed(1)}`
-         + ` ${(p2[0] - (p3[0] - p1[0]) / 6).toFixed(1)},${clamp(p2[1] - (p3[1] - p1[1]) / 6).toFixed(1)}`
-         + ` ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
-    }
-    return d;
-  }
-
-  // Touch panels have no hover: tapping the curve shows the hour under the finger for a few seconds.
-  let peakLabel = "", tapUntil = 0, lastTimeline = [];
-  $("timeline").addEventListener("click", (ev) => {
-    if (lastTimeline.length < 2) return;
-    const r = ev.currentTarget.getBoundingClientRect();
-    const i = Math.round(((ev.clientX - r.left) / Math.max(1, r.width)) * (lastTimeline.length - 1));
-    const b = lastTimeline[Math.max(0, Math.min(lastTimeline.length - 1, i))];
-    tapUntil = Date.now() + 4000;
-    text("timeline-peak", `${new Date(b.hour_start).toLocaleTimeString([], { hour: "2-digit" })} · ${fmtTokens(b.tokens)}`);
-    setTimeout(() => { if (Date.now() >= tapUntil) text("timeline-peak", peakLabel); }, 4100);
-  });
 
   // ---------- sessions ----------
   // A card is one compact record: the head (status, age | project@branch), the
@@ -346,7 +299,7 @@
       <div class="card-detail"></div>
       <div class="card-actions" hidden></div>
       <div class="card-meta">
-        <span class="cell"><span class="tag model" hidden></span><span class="tag card-mode" hidden></span></span>
+        <span class="cell"><span class="tag card-agent" hidden></span><span class="tag model" hidden></span><span class="tag card-mode" hidden></span></span>
         <span class="cell"><span class="tag card-up" hidden></span><span class="tag card-msgs"></span></span>
         <span class="cell card-ctx">ctx <b class="card-ctx-text"></b><span class="bar bar-mini"><span class="bar-fill"></span></span><b class="card-ctx-pct"></b><span class="card-compact" hidden></span></span>
         <span class="cell"><span class="tag card-agents" hidden></span><span class="tag card-commits" hidden></span></span>
@@ -420,6 +373,9 @@
     const model = el.querySelector(".tag.model");
     setText(model, s.model || "");
     model.hidden = !s.model;
+    const agent = el.querySelector(".tag.card-agent");
+    setText(agent, agentLabel(s));
+    agent.hidden = !agent.textContent;
     const mode = el.querySelector(".card-mode");
     setText(mode, modeLabel(s.permission_mode));
     mode.hidden = !mode.textContent;
@@ -427,7 +383,9 @@
     const started = s.started_at ? new Date(s.started_at).getTime() : 0;
     up.hidden = !started;
     setText(up, started ? "up " + fmtDuration((now - started) / 1000) : "");
-    setText(el.querySelector(".card-msgs"), `${s.messages} msgs`);
+    const msgs = el.querySelector(".card-msgs");
+    msgs.hidden = !s.messages;  // 0 means "unknown" (e.g. the OpenCode API has no message count)
+    setText(msgs, `${s.messages} msgs`);
     const ctx = el.querySelector(".card-ctx"), pct = s.context_pct || 0;
     setText(ctx.querySelector(".card-ctx-text"), fmtTokens(s.context_tokens));
     const fill = ctx.querySelector(".bar-fill");
@@ -465,6 +423,12 @@
     return MODES[mode] || String(mode).toLowerCase();
   }
   function commitsLabel(n) { return `${n} ${n === 1 ? "commit" : "commits"}`; }
+  // Which coding agent the card belongs to: "claude", "codex", "opencode build", …
+  function agentLabel(s) {
+    if (!s.agent) return "";
+    if (s.agent === "opencode" && s.agent_detail) return `${s.agent} ${s.agent_detail}`;
+    return s.agent;
+  }
   // "3/7 tasks · reviewing the access rules"; "5/5 tasks" once everything is done
   function tasksLabel(t) {
     return `${t.done}/${t.total} tasks` + (t.current ? ` · ${t.current}` : "");
@@ -537,8 +501,10 @@
   // after 20 s, or when the session leaves the snapshot.
   const OVERLAY_MS = 20 * 1000;
   let overlayId = null, overlayTimer = 0;
+  let historyAtEnd = true;  // the transcript follows new messages while the reader is at its end
   function openOverlay(id) {
     overlayId = id;
+    historyAtEnd = true;  // a fresh overlay starts on the newest message
     clearTimeout(overlayTimer);
     overlayTimer = setTimeout(closeOverlay, OVERLAY_MS);
     renderOverlay(lastSessions, Date.now());
@@ -555,6 +521,7 @@
     if (overlayId == null) return;
     const s = sessions.find((x) => x.id === overlayId);
     if (!s) { closeOverlay(); return; }
+    $("overlay").hidden = false;  // unhide before filling so the history can measure and scroll
     const card = $("overlay-card");
     const cls = "overlay-card " + s.status;
     if (card.className !== cls) card.className = cls;
@@ -566,6 +533,7 @@
     text("ov-branch", s.branch || "–");
     text("ov-commits", s.commits ? `${commitsLabel(s.commits)} since it started` : "none since it started");
     text("ov-model", s.model || "–");
+    text("ov-agent", agentLabel(s) || "–");
     const started = s.started_at ? new Date(s.started_at).getTime() : 0;
     text("ov-started", started ? `${fmtTime(s.started_at)} · running ${fmtDuration((now - started) / 1000)}` : "–");
     text("ov-activity", s.last_activity ? `${fmtTime(s.last_activity)} · ${fmtAgo(s.last_activity, now)} ago` : "–");
@@ -575,13 +543,29 @@
     text("ov-agents", agentsLabel(s) || "none");
     text("ov-mode", s.permission_mode || "–");
     text("ov-waiting", s.waiting_since ? `${fmtAgo(s.waiting_since, now)} · since ${fmtTime(s.waiting_since)}` : "–");
-    text("ov-prompt", s.last_prompt || "–");
-    text("ov-reply", s.last_reply || "–");
     renderQuestions(s);
     const actions = $("ov-actions");
     actions.hidden = !s.can_send;
     if (s.can_send) updateActions($("ov-presets"), { status: "idle", can_send: true }, lastPresets, 99);
-    $("overlay").hidden = false;
+    renderHistory(s);
+    // fill the transcript first, then follow: the question block and the actions
+    // size the box, and the newest message must stay visible after they land
+    if (historyAtEnd) $("ov-history").scrollTop = $("ov-history").scrollHeight;
+  }
+  // The conversation tail: one row per message, oldest first, the newest at the
+  // bottom. Rebuilt only when the messages change, so a scroll position survives
+  // the per-second snapshots; ``historyAtEnd`` decides whether it follows along.
+  function renderHistory(s) {
+    const box = $("ov-history");
+    const items = Array.isArray(s.history) ? s.history : [];
+    const key = JSON.stringify(items);
+    if (box.dataset.key === key) return;
+    box.dataset.key = key;
+    box.innerHTML = items.map((m) => {
+      const role = m.role === "user" ? "you" : (agentLabel(s) || "agent");
+      return `<div class="ov-msg ${m.role === "user" ? "user" : "agent"}">`
+        + `<span class="ov-msg-role">${escapeHtml(role)} ❯</span><span class="ov-msg-text">${escapeHtml(m.text)}</span></div>`;
+    }).join("") || '<div class="ov-msg-empty">no messages yet</div>';
   }
   // The full question set: every question with its options as toggles (multi-choice
   // allowed), sent together. Rebuilt when the question changes, so selections survive snapshots.
@@ -713,6 +697,17 @@
     runAction(btn, s);
   });
   $("ov-input").addEventListener("keydown", (ev) => { if (ev.key === "Enter") $("ov-send").click(); });
+  // reading the transcript counts as using the overlay: a press (the start of a
+  // scroll or a tap) restarts the 20 s timer; programmatic scroll pins do not
+  $("overlay").addEventListener("pointerdown", (ev) => {
+    if (ev.target === ev.currentTarget || overlayId == null) return;  // a backdrop press closes it anyway
+    clearTimeout(overlayTimer);
+    overlayTimer = setTimeout(closeOverlay, OVERLAY_MS);
+  });
+  $("ov-history").addEventListener("scroll", () => {
+    const box = $("ov-history");
+    historyAtEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
+  });
   function escapeHtml(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
@@ -940,6 +935,160 @@
     if (!commits.length) setText(empty, "no commits today");
   }
 
+  // ---------- github ----------
+  // CI runs from the GitHub Actions API (snapshot key ``github``): what is
+  // running and what has failed without a newer run of the same workflow on
+  // the branch. Rows are keyed by run id and updated in place like the commit
+  // rows; a failure the page has not seen before chimes like a session does.
+  let githubKey = "", githubFailed = null;  // null until the first snapshot with a token
+  let lastGithub = {};  // the newest snapshot block, for the detail overlay's first paint
+  function shortRepo(repo) { return String(repo || "").split("/").pop(); }
+  // "running", "queued", "failed", "timed out"… — the word the run's state shows as
+  function runState(r) {
+    if (r.status !== "completed") return r.status === "in_progress" ? "running" : r.status;
+    if (r.conclusion === "timed_out") return "timed out";
+    if (r.conclusion === "startup_failure") return "startup failed";
+    return "failed";
+  }
+  function runWhen(r, now) {
+    if (r.status === "completed") return r.updated_at ? `${runState(r)} ${fmtAgo(r.updated_at, now)} ago` : runState(r);
+    const started = r.started_at ? new Date(r.started_at).getTime() : 0;
+    return (runState(r) + (started ? " " + fmtDuration((now - started) / 1000) : "")).trim();
+  }
+  function renderGithub(g, now, settings) {
+    g = g || {};
+    lastGithub = g;
+    const runs = g.runs || [];
+    const summary = $("github-summary");
+    const parts = [];
+    if (g.running) parts.push(`<span class="run-running">${g.running} running</span>`);
+    if (g.failed) parts.push(`<span class="run-failed">${g.failed} failed</span>`);
+    const summaryHtml = parts.join(" · ");
+    if (summary.innerHTML !== summaryHtml) summary.innerHTML = summaryHtml;
+    const box = $("github-runs");
+    const key = runs.map((r) => r.id).join("\n");  // a new sequence (a run appeared or left) rebuilds; a run's state updates in place
+    if (key !== githubKey) {
+      githubKey = key;
+      box.innerHTML = runs.map((r) => `<div class="run" data-id="${r.id}">
+        <span class="run-dot"></span><span class="run-name"></span><span class="run-repo"></span><span class="run-when"></span></div>`).join("");
+    }
+    runs.forEach((r, i) => {
+      const row = box.children[i];
+      if (!row) return;
+      setClass(row, "run " + (r.status === "completed" ? "failed" : "running"));
+      setText(row.querySelector(".run-name"), r.name || "");
+      setText(row.querySelector(".run-repo"), shortRepo(r.repo) + (r.branch ? "@" + r.branch : ""));
+      row.title = `${r.repo} · ${r.title || r.name}`;
+      setText(row.querySelector(".run-when"), runWhen(r, now));
+    });
+    const empty = $("github-empty");
+    empty.hidden = runs.length > 0;
+    if (!runs.length) setText(empty, g.configured ? "no running or failed runs" : "no GitHub token: gh auth login");
+    // A failure the previous snapshot did not have (a run that just ended red, or a
+    // new one). A first sighting after load never alerts; the server does the same.
+    // The set is sticky so a row scrolling out of the pane and back does not alert twice.
+    const failed = new Set(runs.filter((r) => r.status === "completed").map((r) => r.id));
+    if (githubFailed !== null && settings.alert_sound && [...failed].some((id) => !githubFailed.has(id))) { unlockAudio(); chime("alert"); }
+    if (g.configured) githubFailed = githubFailed === null ? failed : new Set([...githubFailed, ...failed]);
+    renderCiOverlay(runs, g, now);
+  }
+
+  // Tapping the pane opens the runs in a full-height overlay: workflow, run title,
+  // repo@branch, run number, start time and state; each row is a link to the run's
+  // Actions page. Like the session overlay it stays live (updated in place, rebuilt
+  // only when the run ids change) and closes on a backdrop tap or after 20 s.
+  let ciOpen = false, ciTimer = 0, ciKey = "";
+  const ciOpened = new Set();  // urls handed to the desktop browser in the last few seconds
+  function openCiOverlay() {
+    ciOpen = true;
+    ciKey = "";  // a fresh open rebuilds the rows
+    clearTimeout(ciTimer);
+    ciTimer = setTimeout(closeCiOverlay, OVERLAY_MS);
+    renderCiOverlay(lastGithub.runs || [], lastGithub, Date.now());
+  }
+  function closeCiOverlay() {
+    ciOpen = false;
+    clearTimeout(ciTimer);
+    $("ci-overlay").hidden = true;
+  }
+  function ciSub(r) {
+    const started = r.started_at ? fmtTime(r.started_at) : "";
+    return [shortRepo(r.repo) + (r.branch ? "@" + r.branch : ""), r.number ? "#" + r.number : "", started ? "started " + started : ""]
+      .filter(Boolean).join(" · ");
+  }
+  function renderCiOverlay(runs, g, now) {
+    if (!ciOpen) return;
+    $("ci-overlay").hidden = false;  // unhide before filling so the rows can be measured
+    const parts = [];
+    if (g.running) parts.push(`<span class="run-running">${g.running} running</span>`);
+    if (g.failed) parts.push(`<span class="run-failed">${g.failed} failed</span>`);
+    const summaryHtml = parts.join(" · ");
+    if ($("ci-summary").innerHTML !== summaryHtml) $("ci-summary").innerHTML = summaryHtml;
+    const box = $("ci-runs");
+    // A run without a url (the API did not give one) is listed but is not a link.
+    const key = runs.map((r) => `${r.id}|${r.url || ""}`).join("\n");
+    if (key !== ciKey) {
+      ciKey = key;
+      box.innerHTML = runs.map((r) => {
+        const tag = r.url
+          ? `<a class="ci-run" data-id="${r.id}" href="${escapeHtml(r.url)}" target="_blank" rel="noopener">`
+          : `<div class="ci-run" data-id="${r.id}">`;
+        const link = r.url ? '<span class="ci-open">open ↗</span>' : '<span class="ci-open none">no link</span>';
+        return `${tag}<span class="run-dot"></span><span class="ci-main"><span class="ci-head"><span class="ci-name"></span><span class="ci-title"></span></span><span class="ci-sub"></span></span><span class="ci-when"></span>${link}${r.url ? "</a>" : "</div>"}`;
+      }).join("");
+    }
+    runs.forEach((r, i) => {
+      const row = box.children[i];
+      if (!row) return;
+      setClass(row, "ci-run " + (r.status === "completed" ? "failed" : "running") + (ciOpened.has(r.url) ? " opened" : ""));
+      setText(row.querySelector(".ci-name"), r.name || "");
+      setText(row.querySelector(".ci-title"), r.title || "");
+      setText(row.querySelector(".ci-sub"), ciSub(r));
+      setText(row.querySelector(".ci-when"), runWhen(r, now));
+    });
+    const empty = $("ci-empty");
+    empty.hidden = runs.length > 0;
+    if (!runs.length) setText(empty, g.configured ? "no running or failed runs" : "no GitHub token: gh auth login");
+  }
+  $("github-panel").addEventListener("click", openCiOverlay);
+  // A tap on a run asks the server to open its Actions page in the desktop's
+  // own browser (POST /api/open): the kiosk Chromium is fullscreen on the
+  // panel, so navigating it would replace the dashboard. The href stays for
+  // hover/copy and as a fallback when the server cannot open a browser.
+  async function openRun(link) {
+    const url = link.getAttribute("href");
+    if (!url) return;
+    try {
+      const r = await fetch("/api/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
+      if (!r.ok) {
+        let detail = `HTTP ${r.status}`;
+        try { const data = await r.json(); if (data.detail) detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail); } catch (e) { /* keep the status */ }
+        throw new Error(detail);
+      }
+      ciOpened.add(url);
+      setTimeout(() => { ciOpened.delete(url); renderCiOverlay(lastGithub.runs || [], lastGithub, Date.now()); }, 3000);
+    } catch (e) {
+      showError(`could not open the run: ${e.message}`);
+    }
+  }
+  $("ci-runs").addEventListener("click", (ev) => {
+    const link = ev.target.closest("a.ci-run");
+    if (!link) return;
+    ev.preventDefault();  // never navigate the kiosk away from the dashboard
+    openRun(link);
+  });
+  $("ci-overlay").addEventListener("click", (ev) => {
+    if (ev.target === ev.currentTarget) { closeCiOverlay(); return; }  // a backdrop tap closes it
+    clearTimeout(ciTimer);  // any tap inside keeps it open for another 20 s
+    ciTimer = setTimeout(closeCiOverlay, OVERLAY_MS);
+  });
+  // a press (the start of a scroll or a tap) also restarts the 20 s timer
+  $("ci-overlay").addEventListener("pointerdown", (ev) => {
+    if (!ciOpen || ev.target === ev.currentTarget) return;
+    clearTimeout(ciTimer);
+    ciTimer = setTimeout(closeCiOverlay, OVERLAY_MS);
+  });
+
   // ---------- render root ----------
   function renderErrors(errors) {
     if (localError && Date.now() < localErrorUntil) errors = { ...errors, panel: localError };
@@ -966,6 +1115,7 @@
     try { renderQueue(snap.spotify_queue, snap.spotify || {}, errors); } catch (e) { console.error("queue", e); }
     try { renderSystem(snap.system, errors, snap.settings || {}); } catch (e) { console.error("system", e); }
     try { renderGit(snap.git, now); } catch (e) { console.error("git", e); }
+    try { renderGithub(snap.github, now, snap.settings || {}); } catch (e) { console.error("github", e); }
   }
 
   // ---------- transport ----------
