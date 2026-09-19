@@ -87,7 +87,7 @@ def test_focus_monitor_speaks_both_hyprland_config_styles(monkeypatch):
     # legacy call fails there, so both are sent and failures ignored)
     assert calls == [
         ["hyprctl", "dispatch", "focusmonitor", "DP-2"],
-        ["hyprctl", "eval", 'return hl.dsp.focus({ monitor = "DP-2" })'],
+        ["hyprctl", "eval", 'hl.dispatch(hl.dsp.focus({ monitor = "DP-2" }))'],
     ]
     # a missing hyprctl or a suspicious monitor name never runs anything
     monkeypatch.setattr(server.shutil, "which", lambda name: None)

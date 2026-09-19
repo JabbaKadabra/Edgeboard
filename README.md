@@ -165,8 +165,8 @@ login (`EDGEBOARD_GITHUB_TOKEN` is only for another account).
 | `EDGEBOARD_GITHUB_INTERVAL`     | `30` seconds                             |
 | `EDGEBOARD_GITHUB_FAILED_HOURS` | `24` — how long a failure stays on the panel after its run ends |
 | `EDGEBOARD_GITHUB_TOKEN`        | unset — the `gh` CLI's own login is used; set a token for another account |
-| `EDGEBOARD_OPEN_COMMAND`        | `xdg-open` — how a tapped CI run is opened outside the kiosk (empty disables the open) |
-| `EDGEBOARD_OPEN_MONITOR`        | unset — a Hyprland monitor name (e.g. `DP-2`) to focus before opening, so the browser lands there |
+| `EDGEBOARD_OPEN_COMMAND`        | `xdg-open` — how a tapped CI run is opened outside the kiosk (empty disables the open; use a new-window command like `firefox --new-window`) |
+| `EDGEBOARD_OPEN_MONITOR`        | unset — a Hyprland monitor name (e.g. `DP-2`) to focus before opening, so a new browser window lands there |
 | `EDGEBOARD_ENV_FILE`            | `.env` (relative to the working directory) |
 
 The server has no authentication and exposes session titles, project paths
