@@ -406,10 +406,12 @@ class Collectors:
             self._token_checked = loop_time
         usage = dict(self.state.usage)
         if not self._token:
+            # No Claude Code login: not an error (like the GitHub pane), the
+            # Limits header says "estimated" and the windows carry local counts.
             usage["source"] = "local"
             usage["windows"] = [w.to_dict() for w in claude_usage.local_windows(self._events_cache, now)]
             self.state.usage = usage
-            raise RuntimeError("no OAuth token in .credentials.json; showing local estimate")
+            return None
         try:
             async with httpx.AsyncClient() as client:
                 data = await claude_usage.fetch_usage(client, self._token, self.settings.usage_url)
