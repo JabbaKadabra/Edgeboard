@@ -174,7 +174,7 @@ def test_collect_sessions_maps_the_service(monkeypatch, tmp_path):
     state_file.write_text(json.dumps({"url": SERVICE.url, "password": SERVICE.password}))
     settings = Settings(agents=("opencode",), opencode_state_file=state_file)
     monkeypatch.setattr(opencode, "default_request", lambda service, timeout=5.0: _fake_request(routes))
-    sessions, summary = collect_sessions(settings, datetime.now(timezone.utc), {})
+    sessions, summary = collect_sessions(settings, NOW, {})
     assert len(sessions) == 1
     session = sessions[0]
     assert session.agent == "opencode" and session.agent_detail == "build"

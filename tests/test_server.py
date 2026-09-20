@@ -264,7 +264,7 @@ def _rate_limited(retry_after: str | None = None):
     return httpx.HTTPStatusError("429", request=request, response=response)
 
 
-def _usage_collector(monkeypatch, responses):
+def _usage_collector(monkeypatch, responses, token: str | None = "tok"):
     import asyncio
 
     from edgeboard.collectors import claude_usage
@@ -272,7 +272,7 @@ def _usage_collector(monkeypatch, responses):
 
     state = State()
     c = Collectors(Settings(usage_interval=60), state, lambda a: (0, ""))
-    monkeypatch.setattr(claude_usage, "load_token", lambda claude_dir: "tok")
+    monkeypatch.setattr(claude_usage, "load_token", lambda claude_dir: token)
 
     async def fake_fetch(client, token, url):
         item = responses.pop(0)
@@ -289,6 +289,14 @@ def _usage_collector(monkeypatch, responses):
             return None, exc
 
     return c, state, lambda: asyncio.run(poll())
+
+
+def test_usage_without_a_token_shows_the_local_estimate_without_an_error(monkeypatch):
+    c, state, poll = _usage_collector(monkeypatch, [], token=None)
+    assert poll() == (None, None)
+    assert state.usage["source"] == "local"
+    assert [w["key"] for w in state.usage["windows"]] == ["five_hour", "seven_day"]
+    assert all(w["utilization"] is None for w in state.usage["windows"])
 
 
 def test_usage_429_marks_stale_and_backs_off_without_an_error(monkeypatch):
